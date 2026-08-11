@@ -440,31 +440,33 @@ a {{ color: var(--accent); }}
 
 <section id="derivation">
   <div class="section-head"><span class="section-num">02</span><h2>Derivation rules</h2></div>
-  <p class="section-desc">Three nested clocks, each one gating the one below it.</p>
+  <p class="section-desc">Pixel and Line Clock are both count-complete <em>triggers</em> — a
+  single sample wide, not held high. Frame Clock is the one gated <em>level</em> signal.</p>
   <div class="card-row">
     <div class="clock-card pixel">
       <p class="kicker">Pixel Clock</p>
-      <p class="rule-text">Pulses once, one sample wide, every time the laser strobe reads
-      <code>5</code>. 256 pulses per frame — one per dwell point.</p>
+      <p class="rule-text">Trigger. Pulses once, one sample wide, every time the laser strobe
+      reads <code>5</code>. 256 pulses per frame — one per pixel counted.</p>
     </div>
     <div class="clock-card line">
       <p class="kicker">Line Clock</p>
-      <p class="rule-text">Goes high on the line's <em>1st</em> pixel pulse, stays high through
-      its <em>16th</em>, then drops low for the ~44-sample flyback to the next line. 16 pulses
-      per frame.</p>
+      <p class="rule-text">Trigger. Pulses once, one sample wide, the instant a line's
+      <em>16th</em> pixel is counted — landing on the same sample as that pixel's Pixel Clock
+      pulse. Not held high across the line. 16 pulses per frame.</p>
     </div>
     <div class="clock-card frame">
       <p class="kicker">Frame Clock</p>
-      <p class="rule-text">Goes high on line 1's first pixel, stays high through line 16's last
-      pixel, then drops — closing the frame. One pulse per frame.</p>
+      <p class="rule-text">Level. Goes high on line 1's first pixel, stays high through line 16's
+      last pixel, then drops — closing the frame. One on/off span per frame.</p>
     </div>
   </div>
 </section>
 
 <section id="timing">
   <div class="section-head"><span class="section-num">03</span><h2>Timing diagram</h2></div>
-  <p class="section-desc">Standard nested-clock convention: frame envelopes line, line envelopes
-  pixel. Hover any pixel pulse or line block for its sample index and timestamp.</p>
+  <p class="section-desc">Frame Clock gates the whole scan; Pixel and Line Clock are two
+  trigger trains ticking inside it, at 1× and 16× the pixel rate. Hover any pulse for its
+  sample index and timestamp.</p>
   <div class="legend">
     <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock</span>
     <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock</span>
@@ -490,29 +492,29 @@ a {{ color: var(--accent); }}
   <div class="table-scroll">
     <table>
       <thead>
-        <tr><th>Clock</th><th>Period</th><th>Frequency</th><th>Events / frame</th><th>Duty cycle</th></tr>
+        <tr><th>Clock</th><th>Type</th><th>Period</th><th>Frequency</th><th>Events / frame</th></tr>
       </thead>
       <tbody>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-pixel)"></span>Pixel</td>
+          <td>Trigger</td>
           <td>30.00 µs</td>
           <td>33,333.3 Hz</td>
           <td>256</td>
-          <td>1 sample / 30 (~3.3%)</td>
         </tr>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-line)"></span>Line</td>
+          <td>Trigger</td>
           <td>493.87 µs</td>
           <td>2,024.8 Hz</td>
           <td>16</td>
-          <td>450 / 494 samples (~91%)</td>
         </tr>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-frame)"></span>Frame</td>
+          <td>Level</td>
           <td>8.349 ms</td>
           <td>119.775 Hz</td>
           <td>1</td>
-          <td>7,859 / 8,349 samples (~94%)</td>
         </tr>
       </tbody>
     </table>

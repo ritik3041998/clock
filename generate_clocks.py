@@ -17,11 +17,17 @@ Scan structure discovered in the data (16x16 = 256 pixels total):
     - The whole file (start delay + 16 lines + end tail) = one full frame
 
 Clock definitions produced here:
-    Pixel Clock  -> 1-sample-wide pulse at every laser==5 event   (256 pulses)
-    Line Clock   -> HIGH from the first pixel of a line to its 16th (last)
-                    pixel, LOW during flyback to the next line     (16 pulses)
-    Frame Clock  -> HIGH from the very first pixel of line 1 to the very
-                    last pixel of line 16, LOW outside that         (1 pulse)
+    Pixel Clock  -> 1-sample-wide TRIGGER pulse at every laser==5 event,
+                    i.e. every time a pixel is counted                (256 pulses)
+    Line Clock   -> 1-sample-wide TRIGGER pulse fired the instant a line's
+                    16th (last) pixel is counted -- coincides with that
+                    pixel's Pixel Clock pulse. NOT continuous/held high
+                    across the line; it is a count-complete trigger,
+                    same as Pixel Clock but firing once per 16 pixels
+                    instead of once per pixel                         (16 pulses)
+    Frame Clock  -> HIGH (level) from the very first pixel of line 1 to the
+                    very last pixel of line 16, LOW outside that -- one
+                    on/off span = one frame counted                    (1 pulse)
 
 Outputs:
     clock_output.csv    -> full sample-by-sample table (voltages + all clocks)
@@ -97,7 +103,12 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
 
     for li, ln in enumerate(lines):
         start, end = ln[0], ln[-1]
-        line_clock[start:end + 1] = 1
+        # Line Clock is a trigger, not a level: it fires for exactly the one
+        # sample where the 16th pixel of this line is counted -- it does NOT
+        # stay high across the whole line. Line_Number metadata below still
+        # spans the full line (start..end) since that's just "which line is
+        # this sample part of", independent of the trigger signal itself.
+        line_clock[end] = 1
         line_number[start:end + 1] = li
         for pi, sample in enumerate(ln):
             pixel_in_line[sample] = pi
@@ -129,10 +140,12 @@ def compute_frequencies(built, sample_rate_hz, total_samples):
     pixel_period_s = stats.mean(pixel_gaps) * dt
     pixel_freq_hz = 1.0 / pixel_period_s
 
-    # Line period: time between the first pixel of each line and the first
-    # pixel of the next line (dwell time + flyback).
-    line_starts = [ln[0] for ln in lines]
-    line_gaps = np.diff(line_starts).tolist()
+    # Line period: time between consecutive Line Clock triggers, i.e. between
+    # the 16th pixel of one line and the 16th pixel of the next (dwell time +
+    # flyback -- same spacing as start-to-start since each line has a fixed
+    # 16-pixel count).
+    line_triggers = [ln[-1] for ln in lines]
+    line_gaps = np.diff(line_triggers).tolist()
     line_period_s = stats.mean(line_gaps) * dt
     line_freq_hz = 1.0 / line_period_s
 
