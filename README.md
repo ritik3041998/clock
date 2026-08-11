@@ -247,14 +247,33 @@ python build_report.py --line-delay-us 8 --frame-delay-us 15 --out report_delaye
 
 ### 3.4 `scan_animation.html` / `build_animation.py` — the live playback
 
-Same pattern as `build_report.py`: a self-contained generator, driven by
-`generate_clocks.build_clocks()`, that emits a single static HTML page with
-an embedded playback animation (beam position, LED clock states, a
-scrolling timing scope — see the published artifact for the full
-description). Also takes `--sample-rate` / `--pixel/line/frame-delay-us`.
+Different from `build_report.py` in one important way: **the delay is a
+live, in-browser control here, not baked in at build time.** The page ships
+the *physical* (undelayed) scan structure — 256 pixel events grouped into
+16 lines, plus the physical frame span — and a small JS engine
+(`applyDelays()`) that recomputes every trigger position, the timing-scope
+paths, and the numbered markers **in the browser**, instantly, whenever you
+edit a delay input and click **Apply**. No server, no rebuild.
+
+The page has two interactive controls beyond play/pause/speed/seek:
+
+- **Start at pixel #** — jump playback straight to any of the 256 pixels
+  (1–256) via the number input + **Go** button, instead of always starting
+  at sample 0.
+- **Pixel / Line / Frame delay (µs)** — three number inputs + **Apply**.
+  Editing these and clicking Apply re-derives the delayed trigger set from
+  the embedded physical data, exactly like `generate_clocks.py`'s
+  `--pixel/line/frame-delay-us`, including the same drop-and-warn behavior
+  if a delay pushes a trigger past the end of the recorded window (shown as
+  an on-page banner instead of a console `[warn]`).
+
+`--pixel/line/frame-delay-us` on the command line still exist, but now they
+only set the *initial* values the page's delay inputs load with — the CLI
+flags are a convenience for opening the page pre-configured, not a
+requirement; every value is editable live afterward.
 
 ```bash
-python build_animation.py --pixel-delay-us 2 --line-delay-us 8 --frame-delay-us 15
+python build_animation.py --line-delay-us 12   # page opens with Line Delay pre-filled to 12 µs
 ```
 
 ---
@@ -398,3 +417,11 @@ python visualize_clocks.py --zoom-lines 2
 | `scan_animation.html`, `build_animation.py` | The published live-playback artifact + its self-contained generator (imports `generate_clocks`, same delay flags). |
 | `fonts/` | Archivo + IBM Plex Mono `.woff2` files, embedded as data URIs by both build scripts. |
 | `16x16_lines.csv`, `16x16_meas.csv`, `scan_pattern.bmp`, `spatial_points.bmp` | Reference files from the original dataset, used to validate the reconstruction, not consumed by any script. |
+
+
+
+
+Tier	Pixel delay	Line delay	Frame delay	What you'll see
+Subtle (what you tried)	2 µs	8 µs	15 µs	Technically correct, but invisible without zooming way in — only ~0.4% of the plotted window
+Moderate (recommended)	5 µs	15 µs	60 µs	Clear, obvious offset between the orange/blue/green markers in viz_timing_zoom.png
+Dramatic	10 µs	40 µs	150 µs	Unmistakable at a glance, markers clearly separated in both zoom and full-frame plots

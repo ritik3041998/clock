@@ -2,25 +2,24 @@
 build_animation.py
 ===================
 Self-contained generator for scan_animation.html — reuses generate_clocks.py's
-own detection + delay logic directly (import, not a re-implementation) so
-the animation can never drift out of sync with the pipeline's actual clock
-semantics, and emits a single static HTML page with an embedded live
-playback animation. No intermediate/scratch files required.
+own detection logic directly (import, not a re-implementation) for the
+PHYSICAL (undelayed) scan structure, then ships that physical data to the
+browser and lets the page itself compute delayed trigger positions live in
+JavaScript. This means the delay inputs in the page are truly interactive —
+no server round-trip, no rebuilding the HTML — and the "start at pixel #"
+control can jump anywhere in the (possibly delayed) pixel sequence instantly.
 
 Clock semantics match generate_clocks.py:
     Pixel Clock -> trigger, 1 sample wide, once per pixel counted (256/frame)
-    Line Clock  -> two triggers per line, 1 sample wide each: line-start (1st
-                   pixel) and line-complete (16th pixel, coincides with that
-                   line's 16th Pixel Clock pulse) (32/frame). NOT held high
-                   across the line.
-    Frame Clock -> two triggers per frame, same style as Line Clock:
-                   frame-start (line 1's 1st pixel) and frame-complete
-                   (line 16's 16th pixel) (2/frame). NOT held high across
-                   the frame.
+    Line Clock  -> two triggers per line: line-start (1st pixel) and
+                   line-complete (16th pixel) (32/frame). NOT held high.
+    Frame Clock -> two triggers per frame: frame-start (line 1's 1st pixel)
+                   and frame-complete (line 16's 16th pixel) (2/frame). NOT
+                   held high.
 
-Supports the same optional per-clock start delay as generate_clocks.py:
-
-    python build_animation.py --pixel-delay-us 2 --line-delay-us 8 --frame-delay-us 15
+--pixel/line/frame-delay-us on the command line only set the INITIAL values
+shown in the page's delay inputs on load -- the delay itself is recomputed
+live in the browser whenever you edit those inputs and click Apply.
 
 Usage:
     python build_animation.py [--sample-rate 1e6] [--pixel/line/frame-delay-us ...] [--out scan_animation.html]
@@ -29,44 +28,14 @@ import argparse
 import json
 import base64
 
-import numpy as np
-
 import generate_clocks as gc
 
 
-def build_step_path(intervals, t_lo, t_hi, y_hi, y_lo, x0, x1):
-    def X(t):
-        return x0 + (t - t_lo) / (t_hi - t_lo) * (x1 - x0)
-    parts = []
-    cur_x = X(t_lo)
-    parts.append(f"M{cur_x:.2f},{y_lo:.2f}")
-    for (t0, t1) in intervals:
-        xa, xb = X(t0), X(t1)
-        if xa < x0:
-            xa = x0
-        if xb > x1:
-            xb = x1
-        if xb <= cur_x:
-            continue
-        parts.append(f"L{xa:.2f},{y_lo:.2f}")
-        parts.append(f"L{xa:.2f},{y_hi:.2f}")
-        parts.append(f"L{xb:.2f},{y_hi:.2f}")
-        parts.append(f"L{xb:.2f},{y_lo:.2f}")
-        cur_x = xb
-    parts.append(f"L{X(t_hi):.2f},{y_lo:.2f}")
-    return " ".join(parts)
-
-
-def build_data(pos_csv, laser_csv, sample_rate_hz,
-               pixel_delay_samples=0, line_delay_samples=0, frame_delay_samples=0):
-    dt = 1.0 / sample_rate_hz
+def build_data(pos_csv, laser_csv, sample_rate_hz):
     pos, laser = gc.load_csv_pair(pos_csv, laser_csv)
-    built = gc.build_clocks(pos, laser,
-                             pixel_delay_samples=pixel_delay_samples,
-                             line_delay_samples=line_delay_samples,
-                             frame_delay_samples=frame_delay_samples)
+    built = gc.build_clocks(pos, laser)  # physical/undelayed baseline -- delay lives in JS now
     n = built["n"]
-    lines = built["lines"]  # physical/undelayed, for the structural "current line" readout
+    lines = built["lines"]
 
     # ---- canvas trajectory geometry ----
     xs = [p[0] for p in pos]
@@ -87,33 +56,9 @@ def build_data(pos_csv, laser_csv, sample_rate_hz,
         traj_flat.append(round(nx(x), 2))
         traj_flat.append(round(ny(y), 2))
 
-    # Pixel dots sit at the beam position AT THE SAMPLE Pixel Clock actually
-    # asserts (the possibly-delayed trigger), matching every other output in
-    # this project -- not necessarily the physical laser-fire sample.
-    pixel_trigger_idx = sorted(int(i) for i in np.where(built["pixel_clock"] == 1)[0])
-    pixels_js = []
-    for k, i in enumerate(pixel_trigger_idx):
-        x, y = pos[i]
-        pixels_js.append({"i": i, "x": round(nx(x), 2), "y": round(ny(y), 2),
-                           "line": k // 16, "pix": k % 16})
-
-    line_spans_js = [[int(l[0]), int(l[-1])] for l in lines]  # structural (physical): for "which line" readout
-    line_starts_i, line_ends_i = gc._trigger_edges_from_array(built["line_clock"])
-    line_triggers_js = [int(x) for x in list(line_starts_i) + list(line_ends_i)]
-    frame_starts_i, frame_ends_i = gc._trigger_edges_from_array(built["frame_clock"])
-    frame_js = [int(built["frame_start"]), int(built["frame_end"])]  # physical, unused by JS logic directly
-    frame_triggers_js = [int(x) for x in list(frame_starts_i) + list(frame_ends_i)]
-
-    # ---- timing lane step paths ----
-    total_ms = n * dt * 1000
-    pulse_w = 0.006  # ms, visible thin pulse
-
-    def to_intervals(idx_list):
-        return [(i * dt * 1000, i * dt * 1000 + pulse_w) for i in idx_list]
-
-    pixel_intervals = to_intervals(pixel_trigger_idx)
-    line_intervals = to_intervals(line_triggers_js)
-    frame_intervals = to_intervals(frame_triggers_js)
+    physical_pixel_idx = [int(i) for ln in lines for i in ln]        # 256, chronological
+    physical_lines = [[int(l[0]), int(l[-1])] for l in lines]        # 16 x [start,end]
+    physical_frame = [int(built["frame_start"]), int(built["frame_end"])]
 
     TW = 1000
     x0t, x1t = 10, TW - 10
@@ -127,56 +72,20 @@ def build_data(pos_csv, laser_csv, sample_rate_hz,
         y0 += LANE_H + GAP
     total_h = y0 - GAP
 
-    def Xmap(t_lo, t_hi, t):
-        return x0t + (t - t_lo) / (t_hi - t_lo) * (x1t - x0t)
-
-    def render(t_lo, t_hi):
-        paths = {
-            "pixel": build_step_path(pixel_intervals, t_lo, t_hi, lanes["pixel"]["yHi"], lanes["pixel"]["yLo"], x0t, x1t),
-            "line": build_step_path(line_intervals, t_lo, t_hi, lanes["line"]["yHi"], lanes["line"]["yLo"], x0t, x1t),
-            "frame": build_step_path(frame_intervals, t_lo, t_hi, lanes["frame"]["yHi"], lanes["frame"]["yLo"], x0t, x1t),
-        }
-        # numbered bold(start)/dotted(complete) markers, same convention as report.html
-        markers = {"line": {"starts": [], "ends": []}, "frame": {"starts": [], "ends": []}}
-        for k, s in enumerate(line_starts_i):
-            t = s * dt * 1000
-            if t_lo <= t <= t_hi:
-                markers["line"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), f"L{k+1}"])
-        for e in line_ends_i:
-            t = e * dt * 1000
-            if t_lo <= t <= t_hi:
-                markers["line"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
-        for k, s in enumerate(frame_starts_i):
-            t = s * dt * 1000
-            if t_lo <= t <= t_hi:
-                markers["frame"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), f"F{k+1}"])
-        for e in frame_ends_i:
-            t = e * dt * 1000
-            if t_lo <= t <= t_hi:
-                markers["frame"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
-        return paths, markers
-
-    paths, markers = render(0, total_ms)
-
-    data = {
+    return {
         "n": n,
         "canvasW": W, "canvasH": H,
         "traj": traj_flat,
-        "pixels": pixels_js,
-        "lineSpans": line_spans_js,
-        "lineTriggers": line_triggers_js,
-        "frame": frame_js,
-        "frameTriggers": frame_triggers_js,
+        "physicalPixelIdx": physical_pixel_idx,
+        "physicalLines": physical_lines,
+        "physicalFrame": physical_frame,
         "timing": {
             "viewW": TW, "viewH": total_h,
             "x0": x0t, "x1": x1t,
             "lanes": lanes,
-            "paths": paths,
-            "markers": markers,
         },
         "sampleRateHz": sample_rate_hz,
     }
-    return data
 
 
 def b64(fn):
@@ -184,30 +93,23 @@ def b64(fn):
 
 
 def timing_lanes_svg(data):
+    """SVG skeleton only -- the trace paths and start/complete markers start
+    empty and are filled in by JS's applyDelays() on page load (and again on
+    every 'Apply' click), since the delay is a live client-side parameter now."""
     lanes = data["timing"]["lanes"]
-    paths = data["timing"]["paths"]
     x0, x1, view_h = data["timing"]["x0"], data["timing"]["x1"], data["timing"]["viewH"]
     parts = []
     for name in ["frame", "line", "pixel"]:
         y_lo = lanes[name]["yLo"]
         parts.append(f'<line x1="{x0}" y1="{y_lo}" x2="{x1}" y2="{y_lo}" class="baseline"/>')
     for name in ["frame", "line", "pixel"]:
-        parts.append(f'<path d="{paths[name]}" class="trace-dim trace-{name}"/>')
+        parts.append(f'<path id="dim{name.capitalize()}" d="" class="trace-dim trace-{name}"/>')
     parts.append(f'<clipPath id="revealClip"><rect id="revealRect" x="0" y="0" width="0" height="{view_h}"/></clipPath>')
     parts.append('<g clip-path="url(#revealClip)">')
     for name in ["frame", "line", "pixel"]:
-        parts.append(f'<path d="{paths[name]}" class="trace-bright trace-{name}"/>')
+        parts.append(f'<path id="bright{name.capitalize()}" d="" class="trace-bright trace-{name}"/>')
     parts.append('</g>')
-    # numbered bold(start)/dotted(complete) trigger markers on Line/Frame lanes
-    markers = data["timing"].get("markers", {})
-    for name in ["line", "frame"]:
-        y_hi, y_lo = lanes[name]["yHi"], lanes[name]["yLo"]
-        m = markers.get(name, {"starts": [], "ends": []})
-        for x, text in m["starts"]:
-            parts.append(f'<line x1="{x}" y1="{y_lo}" x2="{x}" y2="{y_hi-6:.1f}" class="marker-start marker-{name}"/>')
-            parts.append(f'<text x="{x}" y="{y_hi-9:.1f}" text-anchor="middle" class="marker-label marker-label-{name}">{text}</text>')
-        for x in m["ends"]:
-            parts.append(f'<line x1="{x}" y1="{y_lo}" x2="{x}" y2="{y_hi}" class="marker-end marker-{name}"/>')
+    parts.append('<g id="markersGroup"></g>')
     for name in ["frame", "line", "pixel"]:
         y_hi, y_lo = lanes[name]["yHi"], lanes[name]["yLo"]
         mid = (y_hi + y_lo) / 2
@@ -262,6 +164,8 @@ HTML_TEMPLATE = """<!-- Live scan + clock generation animation -->
   --c-line:    #2a78d6;
   --c-frame:   #1baf7a;
   --trail:     #10151b;
+  --warn:      #b5570f;
+  --warn-bg:   #fdf0e6;
   --shadow: 0 1px 2px rgba(16,21,27,0.04), 0 8px 24px -12px rgba(16,21,27,0.12);
 }}
 @media (prefers-color-scheme: dark) {{
@@ -280,6 +184,8 @@ HTML_TEMPLATE = """<!-- Live scan + clock generation animation -->
     --c-line:    #3987e5;
     --c-frame:   #199e70;
     --trail:     #eef1f4;
+    --warn:      #e8934f;
+    --warn-bg:   #2a1d10;
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.55);
   }}
 }}
@@ -298,6 +204,8 @@ HTML_TEMPLATE = """<!-- Live scan + clock generation animation -->
   --c-line:    #3987e5;
   --c-frame:   #199e70;
   --trail:     #eef1f4;
+  --warn:      #e8934f;
+  --warn-bg:   #2a1d10;
   --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 12px 28px -14px rgba(0,0,0,0.55);
 }}
 
@@ -402,6 +310,45 @@ input[type="range"]::-moz-range-thumb {{
 .seek-row {{ margin-top: 12px; display: flex; align-items: center; gap: 12px; }}
 #seek {{ flex: 1; width: 100%; height: 3px; }}
 .seek-time {{ font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }}
+
+/* ---- controls panel (start pixel + delay) ---- */
+.controls-panel {{ margin-top: 18px; }}
+.control-row {{
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}}
+.control-field {{
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}}
+input[type="number"] {{
+  font-family: "Plex Mono", monospace;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--rule-strong);
+  border-radius: 5px;
+  padding: 7px 9px;
+  width: 84px;
+  font-variant-numeric: tabular-nums;
+}}
+input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 1px; }}
+.controls-panel .divider {{ width: 1px; align-self: stretch; background: var(--rule); }}
+.warn-text {{
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: 5px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 11.5px;
+  border: 1px solid var(--warn);
+}}
 
 /* ---- main grid ---- */
 .stage {{
@@ -527,8 +474,8 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
     <h1>Watch the Laser Scan, Watch the Clocks Fire</h1>
     <p class="subtitle">Playback of the reconstructed sample-by-sample scan, slowed down so each
     trigger is visible. All three clocks are the same kind of signal — 1-sample pulses, never
-    held high. Pixel Clock fires once per pixel; Line Clock and Frame Clock each fire twice —
-    once on start, once on complete — at 1×16 and 1×256 the pixel rate.{DELAY_NOTE}</p>
+    held high. Adjust each clock's start delay or jump straight to a pixel below — both recompute
+    live, right in this page.</p>
   </header>
 
   <div class="transport">
@@ -547,6 +494,28 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
   <div class="seek-row">
     <input type="range" id="seek" min="0" max="{N_MINUS_1}" value="0" />
     <span class="seek-time" id="seekTime">t = 0.000 ms / {TOTAL_MS} ms</span>
+  </div>
+
+  <div class="panel controls-panel">
+    <p class="panel-title">Scan Origin &amp; Clock Delay</p>
+    <div class="control-row">
+      <label class="control-field">Start at pixel #
+        <input type="number" id="startPixel" min="1" max="256" value="1" />
+      </label>
+      <button class="btn" id="goStartBtn">Go</button>
+      <div class="divider"></div>
+      <label class="control-field">Pixel delay (µs)
+        <input type="number" id="pixelDelayUs" step="0.5" value="{INIT_PIXEL_DELAY}" />
+      </label>
+      <label class="control-field">Line delay (µs)
+        <input type="number" id="lineDelayUs" step="0.5" value="{INIT_LINE_DELAY}" />
+      </label>
+      <label class="control-field">Frame delay (µs)
+        <input type="number" id="frameDelayUs" step="0.5" value="{INIT_FRAME_DELAY}" />
+      </label>
+      <button class="btn primary" id="applyDelayBtn">Apply</button>
+    </div>
+    <p id="delayWarn" class="warn-text" style="display:none;"></p>
   </div>
 
   <div class="stage">
@@ -604,14 +573,14 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
   </div>
 
   <footer>
-    <p><b style="color:var(--ink)">How this works:</b> every frame of this animation reads one
-    sample index into the same 8,349-row table used throughout this project
-    (<code>clock_output.csv</code>). The beam's X/Y position, the pixel/line/frame clock states,
-    and the scope trace are all lookups against that index — nothing here is re-simulated or
-    approximated, it's the exact reconstructed data played back slower than its native 1 MSa/s
-    rate so it's watchable. Line Clock fires two triggers per line — one coincident with the 1st
-    Pixel Clock pulse (line start), one with the 16th (line complete) — the "Line" progress
-    readout tracks the beam's structural position for context, independent of those two triggers.</p>
+    <p><b style="color:var(--ink)">How this works:</b> the page ships the physical (undelayed)
+    scan structure — 256 pixel events grouped into 16 lines — and computes every clock trigger
+    live, client-side, from the delay values above. Editing a delay and clicking Apply
+    recomputes the pixel dots, the LED flash timing, and the timing-scope traces in place; no
+    server round-trip. A clock's own period is unaffected by its delay (a constant offset cancels
+    out of that measurement) — only its phase relative to the other two clocks moves. If a delay
+    pushes a trigger past the end of the recorded window, it's dropped and reported above,
+    exactly like <code>generate_clocks.py</code>'s <code>[warn]</code> messages.</p>
   </footer>
 </div>
 
@@ -623,13 +592,16 @@ const DATA = {DATA_JSON};
   "use strict";
   const N = DATA.n;
   const traj = DATA.traj; // flat [x0,y0,x1,y1,...]
-  const pixels = DATA.pixels; // [{{i,x,y,line,pix}}]
-  const lineSpans = DATA.lineSpans; // structural: [[s,e],...] -- for "current line" readout only
-  const lineTriggers = DATA.lineTriggers; // the actual Line Clock trigger sample indices
-  const frameTriggers = DATA.frameTriggers; // the actual Frame Clock trigger sample indices ([start, end])
+  const physicalPixelIdx = DATA.physicalPixelIdx; // 256 physical sample indices, chronological
+  const physicalLines = DATA.physicalLines;        // [[s,e],...] x16, physical -- structural "which line" + delay base
+  const physicalFrame = DATA.physicalFrame;        // [s,e], physical
+  const lineSpans = physicalLines;                 // structural "current line" readout never shifts with delay
   const timing = DATA.timing;
   const SR = DATA.sampleRateHz;
   const dtMs = 1000 / SR;
+  const dtUs = dtMs * 1000;
+  const totalMs = N * dtMs;
+  const PULSE_W = 0.006; // ms, visible thin pulse width in the timing scope
 
   // ---- DOM ----
   const canvas = document.getElementById("scanCanvas");
@@ -642,6 +614,13 @@ const DATA = {DATA_JSON};
   const loopChk = document.getElementById("loopChk");
   const seekEl = document.getElementById("seek");
   const seekTime = document.getElementById("seekTime");
+  const startPixelEl = document.getElementById("startPixel");
+  const goStartBtn = document.getElementById("goStartBtn");
+  const pixelDelayEl = document.getElementById("pixelDelayUs");
+  const lineDelayEl = document.getElementById("lineDelayUs");
+  const frameDelayEl = document.getElementById("frameDelayUs");
+  const applyDelayBtn = document.getElementById("applyDelayBtn");
+  const delayWarn = document.getElementById("delayWarn");
   const ledPixel = document.getElementById("ledPixel");
   const ledLine = document.getElementById("ledLine");
   const ledFrame = document.getElementById("ledFrame");
@@ -669,6 +648,12 @@ const DATA = {DATA_JSON};
   let lastPixInLine = -1;
   let lastLine = -1;
 
+  // ---- live-delay-derived state (rebuilt by applyDelays()) ----
+  let pixels = [];              // [{{i,x,y,line,pix}}], delayed
+  let pixelByIndex = new Map();
+  let lineTriggerSet = new Set();
+  let frameTriggerSet = new Set();
+
   // baseline: 30-sample pixel period -> ~150ms real, scaled by speed slider
   const BASE_SAMPLES_PER_SEC = 200;
   function speedFromSlider(v) {{
@@ -678,17 +663,110 @@ const DATA = {DATA_JSON};
   let speedMult = speedFromSlider(parseFloat(speedEl.value));
   speedLabel.textContent = speedMult.toFixed(1) + "×";
 
-  // ---- lookup structures ----
-  const pixelByIndex = new Map();
-  pixels.forEach((p, k) => pixelByIndex.set(p.i, k));
-  const lineTriggerSet = new Set(lineTriggers);
-  const frameTriggerSet = new Set(frameTriggers);
-
   function findLine(idx) {{
     for (let k = 0; k < lineSpans.length; k++) {{
       if (idx >= lineSpans[k][0] && idx <= lineSpans[k][1]) return k;
     }}
     return -1;
+  }}
+
+  // ---- live delay engine ----
+  function buildStepPath(intervals, yHi, yLo, x0, x1) {{
+    const X = (t) => x0 + (t / totalMs) * (x1 - x0);
+    let curX = X(0);
+    let d = "M" + curX.toFixed(2) + "," + yLo.toFixed(2);
+    for (const iv of intervals) {{
+      let xa = X(iv[0]), xb = X(iv[1]);
+      if (xa < x0) xa = x0;
+      if (xb > x1) xb = x1;
+      if (xb <= curX) continue;
+      d += " L" + xa.toFixed(2) + "," + yLo.toFixed(2);
+      d += " L" + xa.toFixed(2) + "," + yHi.toFixed(2);
+      d += " L" + xb.toFixed(2) + "," + yHi.toFixed(2);
+      d += " L" + xb.toFixed(2) + "," + yLo.toFixed(2);
+      curX = xb;
+    }}
+    d += " L" + X(totalMs).toFixed(2) + "," + yLo.toFixed(2);
+    return d;
+  }}
+
+  function toSamples(us) {{ return Math.round(us / dtUs); }}
+
+  function applyDelays(pixelUs, lineUs, frameUs) {{
+    const pxD = toSamples(pixelUs), lnD = toSamples(lineUs), frD = toSamples(frameUs);
+    let dropped = 0;
+
+    const pxIdxAll = physicalPixelIdx.map((i) => i + pxD);
+    const pxIdx = pxIdxAll.filter((t) => t >= 0 && t < N);
+    dropped += pxIdxAll.length - pxIdx.length;
+
+    const lineStarts = [], lineEnds = [];
+    for (const span of physicalLines) {{
+      const ds = span[0] + lnD, de = span[1] + lnD;
+      if (ds >= 0 && ds < N) lineStarts.push(ds); else dropped++;
+      if (de >= 0 && de < N) lineEnds.push(de); else dropped++;
+    }}
+    const frameStarts = [], frameEnds = [];
+    {{
+      const ds = physicalFrame[0] + frD, de = physicalFrame[1] + frD;
+      if (ds >= 0 && ds < N) frameStarts.push(ds); else dropped++;
+      if (de >= 0 && de < N) frameEnds.push(de); else dropped++;
+    }}
+
+    pixels = pxIdx.map((idx, k) => ({{
+      i: idx, x: traj[idx * 2], y: traj[idx * 2 + 1], line: Math.floor(k / 16), pix: k % 16,
+    }}));
+    pixelByIndex = new Map();
+    pixels.forEach((p, k) => pixelByIndex.set(p.i, k));
+    lineTriggerSet = new Set(lineStarts.concat(lineEnds));
+    frameTriggerSet = new Set(frameStarts.concat(frameEnds));
+
+    const lanes = timing.lanes;
+    const pxIntervals = pxIdx.map((i) => [i * dtMs, i * dtMs + PULSE_W]);
+    const lnIntervals = lineStarts.concat(lineEnds).sort((a, b) => a - b).map((i) => [i * dtMs, i * dtMs + PULSE_W]);
+    const frIntervals = frameStarts.concat(frameEnds).sort((a, b) => a - b).map((i) => [i * dtMs, i * dtMs + PULSE_W]);
+
+    const pathPixel = buildStepPath(pxIntervals, lanes.pixel.yHi, lanes.pixel.yLo, timing.x0, timing.x1);
+    const pathLine = buildStepPath(lnIntervals, lanes.line.yHi, lanes.line.yLo, timing.x0, timing.x1);
+    const pathFrame = buildStepPath(frIntervals, lanes.frame.yHi, lanes.frame.yLo, timing.x0, timing.x1);
+    document.getElementById("dimPixel").setAttribute("d", pathPixel);
+    document.getElementById("dimLine").setAttribute("d", pathLine);
+    document.getElementById("dimFrame").setAttribute("d", pathFrame);
+    document.getElementById("brightPixel").setAttribute("d", pathPixel);
+    document.getElementById("brightLine").setAttribute("d", pathLine);
+    document.getElementById("brightFrame").setAttribute("d", pathFrame);
+
+    function Xmap(t) {{ return timing.x0 + (t / totalMs) * (timing.x1 - timing.x0); }}
+    let markerSvg = "";
+    lineStarts.forEach((s, k) => {{
+      const x = Xmap(s * dtMs);
+      markerSvg += '<line x1="' + x.toFixed(2) + '" y1="' + lanes.line.yLo + '" x2="' + x.toFixed(2) + '" y2="' + (lanes.line.yHi - 6).toFixed(1) + '" class="marker-start marker-line"/>';
+      markerSvg += '<text x="' + x.toFixed(2) + '" y="' + (lanes.line.yHi - 9).toFixed(1) + '" text-anchor="middle" class="marker-label marker-label-line">L' + (k + 1) + '</text>';
+    }});
+    lineEnds.forEach((e) => {{
+      const x = Xmap(e * dtMs);
+      markerSvg += '<line x1="' + x.toFixed(2) + '" y1="' + lanes.line.yLo + '" x2="' + x.toFixed(2) + '" y2="' + lanes.line.yHi + '" class="marker-end marker-line"/>';
+    }});
+    frameStarts.forEach((s, k) => {{
+      const x = Xmap(s * dtMs);
+      markerSvg += '<line x1="' + x.toFixed(2) + '" y1="' + lanes.frame.yLo + '" x2="' + x.toFixed(2) + '" y2="' + (lanes.frame.yHi - 6).toFixed(1) + '" class="marker-start marker-frame"/>';
+      markerSvg += '<text x="' + x.toFixed(2) + '" y="' + (lanes.frame.yHi - 9).toFixed(1) + '" text-anchor="middle" class="marker-label marker-label-frame">F' + (k + 1) + '</text>';
+    }});
+    frameEnds.forEach((e) => {{
+      const x = Xmap(e * dtMs);
+      markerSvg += '<line x1="' + x.toFixed(2) + '" y1="' + lanes.frame.yLo + '" x2="' + x.toFixed(2) + '" y2="' + lanes.frame.yHi + '" class="marker-end marker-frame"/>';
+    }});
+    document.getElementById("markersGroup").innerHTML = markerSvg;
+
+    if (dropped > 0) {{
+      delayWarn.textContent = "⚠ " + dropped + " trigger pulse(s) fell outside the recorded window (0.." + (N - 1) + " samples) and were dropped -- reduce the delay to recover them.";
+      delayWarn.style.display = "block";
+    }} else {{
+      delayWarn.style.display = "none";
+    }}
+
+    startPixelEl.max = String(Math.max(1, pixels.length));
+    if (parseInt(startPixelEl.value, 10) > pixels.length) startPixelEl.value = String(Math.max(1, pixels.length));
   }}
 
   // ---- canvas setup ----
@@ -864,13 +942,7 @@ const DATA = {DATA_JSON};
     requestAnimationFrame(tick);
   }}
 
-  playBtn.addEventListener("click", () => {{
-    playing = !playing;
-    playBtn.textContent = playing ? "Pause" : "Play";
-    lastTs = null;
-  }});
-  resetBtn.addEventListener("click", () => {{
-    currentIndex = 0;
+  function resetPlaybackState() {{
     lastFlashedPixel = -1;
     lastFlashedLine = -1;
     lastFlashedFrame = -1;
@@ -879,6 +951,16 @@ const DATA = {DATA_JSON};
     pixelFlashUntil = 0;
     lineFlashUntil = 0;
     frameFlashUntil = 0;
+  }}
+
+  playBtn.addEventListener("click", () => {{
+    playing = !playing;
+    playBtn.textContent = playing ? "Pause" : "Play";
+    lastTs = null;
+  }});
+  resetBtn.addEventListener("click", () => {{
+    currentIndex = 0;
+    resetPlaybackState();
     playing = true;
     playBtn.textContent = "Pause";
   }});
@@ -910,59 +992,87 @@ const DATA = {DATA_JSON};
     playing = false;
     playBtn.textContent = "Play";
     currentIndex = parseFloat(seekEl.value);
-    lastFlashedPixel = -1;
-    lastFlashedLine = -1;
-    lastFlashedFrame = -1;
-    lastLine = -1;
+    resetPlaybackState();
+  }});
+
+  goStartBtn.addEventListener("click", () => {{
+    const wanted = Math.max(1, Math.min(pixels.length, parseInt(startPixelEl.value, 10) || 1));
+    startPixelEl.value = String(wanted);
+    const target = pixels[wanted - 1];
+    if (!target) return;
+    playing = false;
+    playBtn.textContent = "Play";
+    currentIndex = target.i;
+    lastFlashedPixel = target.i;
+    pixelFlashUntil = performance.now() + 450;
+    lastLine = -1; // force recompute of "current line" readout at the new position
+    if (lineTriggerSet.has(target.i)) {{
+      lastFlashedLine = target.i;
+      lineFlashUntil = performance.now() + 450;
+    }}
+    if (frameTriggerSet.has(target.i)) {{
+      lastFlashedFrame = target.i;
+      frameFlashUntil = performance.now() + 450;
+    }}
+  }});
+
+  applyDelayBtn.addEventListener("click", () => {{
+    applyDelays(
+      parseFloat(pixelDelayEl.value) || 0,
+      parseFloat(lineDelayEl.value) || 0,
+      parseFloat(frameDelayEl.value) || 0
+    );
+    currentIndex = 0;
+    resetPlaybackState();
+    playing = true;
+    playBtn.textContent = "Pause";
   }});
 
   window.addEventListener("resize", fitCanvas);
+
+  // ---- initial setup: apply whatever delay values the page loaded with ----
+  applyDelays(
+    parseFloat(pixelDelayEl.value) || 0,
+    parseFloat(lineDelayEl.value) || 0,
+    parseFloat(frameDelayEl.value) || 0
+  );
 
   requestAnimationFrame(tick);
 }})();
 </script>
 """
 
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pos-csv", default="Correct_16x16.csv")
     ap.add_argument("--laser-csv", default="laser16x16.csv")
     ap.add_argument("--sample-rate", type=float, default=1e6)
-    ap.add_argument("--pixel-delay-us", type=float, default=0.0)
-    ap.add_argument("--line-delay-us", type=float, default=0.0)
-    ap.add_argument("--frame-delay-us", type=float, default=0.0)
+    ap.add_argument("--pixel-delay-us", type=float, default=0.0,
+                     help="Initial value pre-filled into the page's Pixel Delay input (editable live)")
+    ap.add_argument("--line-delay-us", type=float, default=0.0,
+                     help="Initial value pre-filled into the page's Line Delay input (editable live)")
+    ap.add_argument("--frame-delay-us", type=float, default=0.0,
+                     help="Initial value pre-filled into the page's Frame Delay input (editable live)")
     ap.add_argument("--out", default="scan_animation.html")
     args = ap.parse_args()
 
-    dt_us = 1e6 / args.sample_rate
-    pixel_delay_samples = round(args.pixel_delay_us / dt_us)
-    line_delay_samples = round(args.line_delay_us / dt_us)
-    frame_delay_samples = round(args.frame_delay_us / dt_us)
-
-    data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate,
-                           pixel_delay_samples, line_delay_samples, frame_delay_samples)
+    data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate)
     data_json = json.dumps(data_obj, separators=(",", ":"))
-
-    delay_note = ""
-    if args.pixel_delay_us or args.line_delay_us or args.frame_delay_us:
-        delay_note = (
-            f" Configured with a start delay: Pixel +{args.pixel_delay_us:.1f}&nbsp;µs, "
-            f"Line +{args.line_delay_us:.1f}&nbsp;µs, Frame +{args.frame_delay_us:.1f}&nbsp;µs "
-            f"from the physical event each clock marks."
-        )
 
     html = HTML_TEMPLATE.format(
         ARCHIVO=b64("fonts/Archivo.woff2"), PLEX400=b64("fonts/PlexMono-400.woff2"),
         PLEX500=b64("fonts/PlexMono-500.woff2"), PLEX600=b64("fonts/PlexMono-600.woff2"),
         DATA_JSON=data_json,
-        DELAY_NOTE=delay_note,
         N_MINUS_1=data_obj["n"] - 1,
-        TOTAL_MS=f'{data_obj["n"] / data_obj["sampleRateHz"] * 1000:.3f}',
+        TOTAL_MS=f'{data_obj["n"] / args.sample_rate * 1000:.3f}',
         CANVAS_W=data_obj["canvasW"], CANVAS_H=data_obj["canvasH"],
         TIMING_VB_W=data_obj["timing"]["viewW"], TIMING_VB_H=data_obj["timing"]["viewH"],
         TIMING_VB_H_MARGIN=data_obj["timing"]["viewH"] + 22,
         TIMING_VIEW_H=data_obj["timing"]["viewH"],
         TIMING_LANES_SVG=timing_lanes_svg(data_obj),
+        INIT_PIXEL_DELAY=args.pixel_delay_us, INIT_LINE_DELAY=args.line_delay_us,
+        INIT_FRAME_DELAY=args.frame_delay_us,
     )
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
