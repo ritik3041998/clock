@@ -168,6 +168,34 @@ to whatever your real DAQ/galvo controller runs at. Everything else
 (`--pos-csv`, `--laser-csv`, `--pixels-per-line`, `--out-prefix`) has
 sensible defaults matching this dataset.
 
+#### Optional: per-clock start delay
+
+By default every clock fires at the exact sample its physical event
+happens — Pixel Clock the instant the laser fires, Line/Frame Clock the
+instant their start/complete pixel fires. Real hardware is rarely that
+clean: each signal usually has its own small propagation/processing
+latency, so Pixel, Line and Frame Clock don't all assert at literally the
+same instant. Three optional flags model that, independently, in
+microseconds:
+
+```bash
+python generate_clocks.py --sample-rate 1e6 \
+    --pixel-delay-us 2 --line-delay-us 8 --frame-delay-us 15
+```
+
+Each is converted to a whole number of samples internally
+(`round(delay_us / (1e6 / sample_rate))`) and just shifts that clock's `1`s
+later in `clock_output.csv` — the underlying `X_Voltage`/`Y_Voltage`/
+`Laser_Raw` columns (the actual measured scan) never change, and each
+clock's own period/frequency is unaffected (a constant delay applied to
+every pulse of one clock cancels out of that clock's own period
+measurement — only its *phase relative to the other two clocks* moves).
+All three default to `0` (today's behavior, all three phase-aligned to the
+physical event) — set only the ones you need. If a delay is large enough
+to push a trigger past the end of the recorded file, or to collide with
+the next trigger of the same clock, the script prints a `[warn]` instead of
+silently corrupting the data.
+
 ### 3.2 `visualize_clocks.py` — plotting only
 
 A second, independent script that **only reads `clock_output.csv`** and
@@ -229,6 +257,7 @@ the shared report, and depends on the font files under `fonts/`.
 | `Period_s` / `Period_ms` | Average time between rising edges. For Line/Frame Clock this is the per-*line*/per-*frame* period (start to next start), not the gap between the two pulses within one line/frame. |
 | `Frequency_Hz` | `1 / Period_s`. |
 | `Events_Per_Frame` | 256 for Pixel, **32** for Line (2 triggers × 16 lines), **2** for Frame (start + complete). |
+| `Start_Delay_us` | The `--pixel-delay-us` / `--line-delay-us` / `--frame-delay-us` that clock was generated with (`0.000` by default). |
 
 At the assumed 1 MSa/s sample rate:
 
@@ -304,6 +333,14 @@ there is no level/held-high signal anywhere in this pipeline anymore.
   "complete" instead of gating the duration. If you need either as a
   held-high signal instead, that's a one-line change back to
   `line_clock[start:end+1] = 1` (or the frame equivalent).
+- **Per-clock start delay is a phase shift, not a rate change.** `--pixel-
+  delay-us` / `--line-delay-us` / `--frame-delay-us` (see §3.1) move each
+  clock's pulses later in time independently to model real hardware
+  latency, defaulting to `0` (no delay, all three phase-aligned as before).
+  The markers (§5) always reflect the actual delayed positions — they're
+  read straight back out of the `Pixel_Clock`/`Line_Clock`/`Frame_Clock`
+  columns, not recomputed from the physical event times, so they stay
+  correct under any delay.
 
 ---
 

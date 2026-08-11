@@ -1,4 +1,4 @@
-Clock,Period_s,Period_ms,Frequency_Hz,Events_Per_Frame
-Pixel Clock,0.000030000,0.030000,33333.333,256
-Line Clock,0.000493867,0.493867,2024.838,32
-Frame Clock,0.008349000,8.349000,119.775,2
+Clock,Period_s,Period_ms,Frequency_Hz,Events_Per_Frame,Start_Delay_us
+Pixel Clock,0.000030000,0.030000,33333.333,256,0.000
+Line Clock,0.000493867,0.493867,2024.838,32,0.000
+Frame Clock,0.008349000,8.349000,119.775,2,0.000

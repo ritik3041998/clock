@@ -37,6 +37,16 @@ All three clocks are the same kind of signal (1-sample triggers, never held
 high) -- they differ only in how often they fire: Pixel every 1 pixel, Line
 every 16 pixels (start + complete), Frame every 256 pixels (start + complete).
 
+Optional per-clock start delay:
+    Real hardware rarely fires all three clocks at the exact same instant --
+    each one usually has its own small propagation/processing latency. Use
+    --pixel-delay-us / --line-delay-us / --frame-delay-us (microseconds,
+    default 0) to shift each clock's triggers later in time independently.
+    This only changes WHEN each clock asserts; the underlying scan data
+    (X/Y voltage, Laser_Raw) and each clock's own period/frequency are
+    unaffected -- a constant delay applied to every pulse of one clock
+    cancels out of that clock's own period measurement.
+
 Outputs:
     clock_output.csv    -> full sample-by-sample table (voltages + all clocks)
     clock_summary.csv   -> measured periods/frequencies for each clock
@@ -71,8 +81,19 @@ def load_csv_pair(pos_path, laser_path):
     return pos, laser
 
 
-def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
-    """Returns dict of per-sample arrays + line/pixel grouping info."""
+def build_clocks(pos, laser, pixels_per_line=16, gap_split=36,
+                  pixel_delay_samples=0, line_delay_samples=0, frame_delay_samples=0):
+    """Returns dict of per-sample arrays + line/pixel grouping info.
+
+    pixel_delay_samples / line_delay_samples / frame_delay_samples: shift
+    that clock's trigger pulses this many samples LATER than the physical
+    event they mark, modeling per-signal hardware latency. 0 = fires at the
+    exact sample the event happens (original behaviour). Line_Number /
+    Pixel_In_Line metadata and every frequency/period measurement are based
+    on the physical (undelayed) event times, since a constant delay doesn't
+    change a clock's own rate -- only the digital Pixel_Clock / Line_Clock /
+    Frame_Clock columns are shifted.
+    """
     n = len(pos)
     laser_on = np.array([1 if L[0] >= 2.5 else 0 for L in laser])  # robust to 5 vs 5.0 etc.
     pixel_idx = np.where(laser_on == 1)[0]
@@ -107,17 +128,36 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
     line_number = np.full(n, -1, dtype=int)
     pixel_in_line = np.full(n, -1, dtype=int)
 
-    pixel_clock[pixel_idx] = 1
+    def fire(arr, event_sample, delay, clock_name):
+        """Assert arr[event_sample + delay] = 1, warning instead of crashing
+        if the delay pushes the trigger outside the recorded window or onto
+        a sample that already fired (delay big enough to overlap the next
+        event of the same clock)."""
+        target = event_sample + delay
+        if not (0 <= target < n):
+            print(f"[warn] {clock_name} trigger at sample {event_sample} "
+                  f"+ delay {delay} = {target} falls outside the recorded "
+                  f"window (0..{n-1}); dropped")
+            return
+        if arr[target] == 1:
+            print(f"[warn] {clock_name} delay of {delay} samples made two "
+                  f"triggers land on the same sample ({target}); one was "
+                  f"overwritten -- reduce the delay")
+        arr[target] = 1
+
+    for i in pixel_idx:
+        fire(pixel_clock, i, pixel_delay_samples, "Pixel Clock")
 
     for li, ln in enumerate(lines):
         start, end = ln[0], ln[-1]
         # Line Clock is two triggers, not a level: one pulse when the line
         # starts (1st pixel), one pulse when it completes (16th pixel). It
         # does NOT stay high in between. Line_Number metadata below still
-        # spans the full line (start..end) since that's just "which line is
-        # this sample part of", independent of the trigger signal itself.
-        line_clock[start] = 1
-        line_clock[end] = 1
+        # spans the full line (start..end), based on the physical/undelayed
+        # event times, since that's just "which line is this sample part
+        # of" -- independent of the (possibly delayed) trigger signal.
+        fire(line_clock, start, line_delay_samples, "Line Clock (start)")
+        fire(line_clock, end, line_delay_samples, "Line Clock (complete)")
         line_number[start:end + 1] = li
         for pi, sample in enumerate(ln):
             pixel_in_line[sample] = pi
@@ -126,8 +166,8 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
     # the frame starts (line 1's 1st pixel), one when it completes (line
     # 16's 16th pixel). Not held high across the frame.
     frame_start, frame_end = lines[0][0], lines[-1][-1]
-    frame_clock[frame_start] = 1
-    frame_clock[frame_end] = 1
+    fire(frame_clock, frame_start, frame_delay_samples, "Frame Clock (start)")
+    fire(frame_clock, frame_end, frame_delay_samples, "Frame Clock (complete)")
 
     return {
         "n": n,
@@ -136,9 +176,12 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
         "frame_clock": frame_clock,
         "line_number": line_number,
         "pixel_in_line": pixel_in_line,
-        "lines": lines,           # list of list-of-sample-indices
-        "frame_start": frame_start,
-        "frame_end": frame_end,
+        "lines": lines,           # list of list-of-sample-indices (physical/undelayed)
+        "frame_start": frame_start,     # physical/undelayed
+        "frame_end": frame_end,         # physical/undelayed
+        "pixel_delay_samples": pixel_delay_samples,
+        "line_delay_samples": line_delay_samples,
+        "frame_delay_samples": frame_delay_samples,
     }
 
 
@@ -199,27 +242,31 @@ def write_output_csv(path, pos, laser, built, sample_rate_hz):
             ])
 
 
-def write_summary_csv(path, freqs, built):
+def write_summary_csv(path, freqs, built, sample_rate_hz):
+    dt_us = 1e6 / sample_rate_hz
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["Clock", "Period_s", "Period_ms", "Frequency_Hz", "Events_Per_Frame"])
+        w.writerow(["Clock", "Period_s", "Period_ms", "Frequency_Hz", "Events_Per_Frame", "Start_Delay_us"])
         w.writerow([
             "Pixel Clock",
             f"{freqs['pixel_period_s']:.9f}", f"{freqs['pixel_period_s']*1e3:.6f}",
             f"{freqs['pixel_freq_hz']:.3f}",
             sum(len(ln) for ln in built["lines"]),
+            f"{built['pixel_delay_samples'] * dt_us:.3f}",
         ])
         w.writerow([
             "Line Clock",
             f"{freqs['line_period_s']:.9f}", f"{freqs['line_period_s']*1e3:.6f}",
             f"{freqs['line_freq_hz']:.3f}",
             len(built["lines"]) * 2,  # 2 trigger pulses per line: start + complete
+            f"{built['line_delay_samples'] * dt_us:.3f}",
         ])
         w.writerow([
             "Frame Clock",
             f"{freqs['frame_period_s']:.9f}", f"{freqs['frame_period_s']*1e3:.6f}",
             f"{freqs['frame_freq_hz']:.3f}",
             2,  # 2 trigger pulses per frame: start + complete
+            f"{built['frame_delay_samples'] * dt_us:.3f}",
         ])
 
 
@@ -242,6 +289,15 @@ def plot_scan_pattern(pos, built, out_path):
     fig.tight_layout()
     fig.savefig(out_path, facecolor="black", dpi=150)
     plt.close(fig)
+
+
+def _trigger_edges_from_array(arr):
+    """Pair up a trigger array's asserted samples in chronological order:
+    1st = start, 2nd = complete, 3rd = start, 4th = complete, ... Reads the
+    ACTUAL (possibly delayed) positions straight from the array, so markers
+    stay correct regardless of any configured pixel/line/frame delay."""
+    hits = list(np.where(arr == 1)[0])
+    return hits[0::2], hits[1::2]
 
 
 def _annotate_triggers(ax, starts, ends, dt, s0, s1, prefix, color):
@@ -283,10 +339,12 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
     # Numbered bold(start)/dotted(complete) markers: L1, L2, ... on the Line
     # Clock lane, F1 on the Frame Clock lane. Pixel Clock is left plain since
     # every pulse there is already unambiguous (one event = one pixel).
-    line_starts = [ln[0] for ln in built["lines"]]
-    line_ends = [ln[-1] for ln in built["lines"]]
+    # Read straight from the (possibly delayed) arrays so markers always
+    # match what the signal actually does.
+    line_starts, line_ends = _trigger_edges_from_array(built["line_clock"])
+    frame_starts, frame_ends = _trigger_edges_from_array(built["frame_clock"])
     _annotate_triggers(axes[1], line_starts, line_ends, dt, s0, s1, "L", "tab:blue")
-    _annotate_triggers(axes[2], [built["frame_start"]], [built["frame_end"]], dt, s0, s1, "F", "tab:green")
+    _annotate_triggers(axes[2], frame_starts, frame_ends, dt, s0, s1, "F", "tab:green")
 
     axes[-1].set_xlabel("Time (ms)")
     fig.suptitle(f"Clock Timing{title_suffix}")
@@ -303,25 +361,52 @@ def main():
                      help="DAQ sample rate in Hz (default 1e6 = 1 MSa/s)")
     ap.add_argument("--pixels-per-line", type=int, default=16)
     ap.add_argument("--out-prefix", default="")
+    ap.add_argument("--pixel-delay-us", type=float, default=0.0,
+                     help="Delay Pixel Clock's triggers this many microseconds "
+                          "after each physical pixel event (default 0)")
+    ap.add_argument("--line-delay-us", type=float, default=0.0,
+                     help="Delay Line Clock's triggers this many microseconds "
+                          "after each physical line start/complete (default 0)")
+    ap.add_argument("--frame-delay-us", type=float, default=0.0,
+                     help="Delay Frame Clock's triggers this many microseconds "
+                          "after each physical frame start/complete (default 0)")
     args = ap.parse_args()
 
+    dt_us = 1e6 / args.sample_rate
+    pixel_delay_samples = round(args.pixel_delay_us / dt_us)
+    line_delay_samples = round(args.line_delay_us / dt_us)
+    frame_delay_samples = round(args.frame_delay_us / dt_us)
+
     pos, laser = load_csv_pair(args.pos_csv, args.laser_csv)
-    built = build_clocks(pos, laser, pixels_per_line=args.pixels_per_line)
+    built = build_clocks(pos, laser, pixels_per_line=args.pixels_per_line,
+                          pixel_delay_samples=pixel_delay_samples,
+                          line_delay_samples=line_delay_samples,
+                          frame_delay_samples=frame_delay_samples)
     freqs = compute_frequencies(built, args.sample_rate, built["n"])
 
     out_csv = f"{args.out_prefix}clock_output.csv"
     summary_csv = f"{args.out_prefix}clock_summary.csv"
     write_output_csv(out_csv, pos, laser, built, args.sample_rate)
-    write_summary_csv(summary_csv, freqs, built)
+    write_summary_csv(summary_csv, freqs, built, args.sample_rate)
 
     plot_scan_pattern(pos, built, f"{args.out_prefix}viz_scan_pattern.png")
     plot_timing(built, args.sample_rate, f"{args.out_prefix}viz_timing_full.png",
                 title_suffix=" - Full Frame")
 
-    # Zoom into the first 2 lines for a readable pixel/line relationship
-    zoom_end = built["lines"][1][-1] + 20
+    # Zoom into the first 2 lines for a readable pixel/line relationship --
+    # widen the window if a delay might push a trigger past the physical
+    # line-2 boundary, so the zoom plot doesn't cut it off.
+    max_delay = max(pixel_delay_samples, line_delay_samples, frame_delay_samples, 0)
+    zoom_end = built["lines"][1][-1] + 20 + max_delay
     plot_timing(built, args.sample_rate, f"{args.out_prefix}viz_timing_zoom.png",
                 sample_range=(0, zoom_end), title_suffix=" - First 2 Lines (zoom)")
+
+    if pixel_delay_samples or line_delay_samples or frame_delay_samples:
+        print("=== Configured start delays ===")
+        print(f"Pixel Clock : +{args.pixel_delay_us:.3f} us ({pixel_delay_samples} samples)")
+        print(f"Line Clock  : +{args.line_delay_us:.3f} us ({line_delay_samples} samples)")
+        print(f"Frame Clock : +{args.frame_delay_us:.3f} us ({frame_delay_samples} samples)")
+        print()
 
     print("=== Clock frequency summary (sample rate = "
           f"{args.sample_rate:,.0f} Hz) ===")

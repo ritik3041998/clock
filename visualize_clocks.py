@@ -81,21 +81,18 @@ def plot_scan_trajectory(df, out_path):
 
 
 def _trigger_edges(df):
-    """Derive each line's start/complete sample index and the frame's
-    start/complete sample index directly from clock_output.csv's columns,
-    so this stays correct even if the underlying data changes."""
-    line_starts, line_ends = [], []
-    for line_no, grp in df[df["Line_Number"] >= 0].groupby("Line_Number"):
-        pix = grp[grp["Pixel_Clock"] == 1]
-        if len(pix):
-            line_starts.append(int(pix["Sample_Index"].min()))
-            line_ends.append(int(pix["Sample_Index"].max()))
-    line_starts.sort()
-    line_ends.sort()
+    """Pair up Line_Clock's and Frame_Clock's asserted samples in
+    chronological order: 1st = start, 2nd = complete, 3rd = start, ...
+    Reads the ACTUAL Line_Clock/Frame_Clock columns directly (not the
+    Pixel_Clock/Line_Number metadata), so markers stay correct even if
+    generate_clocks.py was run with a --line-delay-us/--frame-delay-us that
+    shifts the trigger away from the physical pixel event it marks."""
+    line_hits = sorted(df.loc[df["Line_Clock"] == 1, "Sample_Index"].tolist())
+    line_starts, line_ends = line_hits[0::2], line_hits[1::2]
 
-    frame_hits = df[df["Frame_Clock"] == 1]["Sample_Index"]
-    frame_start = int(frame_hits.min()) if len(frame_hits) else None
-    frame_end = int(frame_hits.max()) if len(frame_hits) else None
+    frame_hits = sorted(df.loc[df["Frame_Clock"] == 1, "Sample_Index"].tolist())
+    frame_start = frame_hits[0] if len(frame_hits) >= 1 else None
+    frame_end = frame_hits[1] if len(frame_hits) >= 2 else None
     return line_starts, line_ends, frame_start, frame_end
 
 
