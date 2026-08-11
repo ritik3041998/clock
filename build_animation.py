@@ -8,9 +8,10 @@ live playback animation. No intermediate/scratch files required.
 
 Clock semantics match generate_clocks.py:
     Pixel Clock -> trigger, 1 sample wide, once per pixel counted (256/frame)
-    Line Clock  -> trigger, 1 sample wide, once per 16 pixels counted -- fires
-                   on the SAME sample as that line's 16th Pixel Clock pulse
-                   (16/frame). NOT held high across the line.
+    Line Clock  -> two triggers per line, 1 sample wide each: line-start (1st
+                   pixel) and line-complete (16th pixel, coincides with that
+                   line's 16th Pixel Clock pulse) (32/frame). NOT held high
+                   across the line.
     Frame Clock -> level, high for the whole frame span (1/frame).
 
 Usage:
@@ -99,7 +100,12 @@ def build_data():
                            "line": k // 16, "pix": k % 16})
 
     line_spans_js = [[l[0], l[-1]] for l in lines]      # structural: for "which line" readout
-    line_triggers_js = [l[-1] for l in lines]            # the actual Line Clock trigger samples
+    # Line Clock is two triggers per line: line-start (1st pixel) and
+    # line-complete (16th pixel) -- 32 sample indices total, not 16.
+    line_triggers_js = []
+    for l in lines:
+        line_triggers_js.append(l[0])
+        line_triggers_js.append(l[-1])
     frame_js = [lines[0][0], lines[-1][-1]]
 
     # ---- timing lane step paths ----
@@ -487,9 +493,9 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
     <p class="eyebrow">Live Simulation · 16 × 16 Raster Scan</p>
     <h1>Watch the Laser Scan, Watch the Clocks Fire</h1>
     <p class="subtitle">Playback of the reconstructed sample-by-sample scan, slowed down so each
-    trigger is visible. Pixel and Line Clock are both count-complete triggers — Line Clock fires
-    the instant a line's 16th pixel is counted, not held high across the line. Frame Clock is the
-    one gated level signal, on for the whole scan.</p>
+    trigger is visible. Pixel Clock fires once per pixel; Line Clock fires twice per line — once
+    when it starts, once when it completes — never held high in between. Frame Clock is the one
+    gated level signal, on for the whole scan.</p>
   </header>
 
   <div class="transport">
@@ -527,7 +533,7 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
           </div>
           <div class="led-card line">
             <span class="led-dot" id="ledLine"></span>
-            <span class="led-text"><span class="led-name">Line Clock</span><span class="led-hz">2,024.8 Hz · 493.87 µs period</span><span class="led-kind">Trigger — 1 per 16 pixels</span></span>
+            <span class="led-text"><span class="led-name">Line Clock</span><span class="led-hz">2,024.8 Hz · 493.87 µs period</span><span class="led-kind">Trigger ×2 — line start + complete</span></span>
             <span class="led-state" id="stateLine">LOW</span>
           </div>
           <div class="led-card frame">
@@ -551,7 +557,7 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
   </div>
 
   <div class="panel scope-wrap">
-    <p class="panel-title">Timing Scope — frame gates two trigger trains (pixel ×1, line ×16)</p>
+    <p class="panel-title">Timing Scope — frame gates two trigger trains (pixel ×1/px, line ×2/line)</p>
     <div class="legend">
       <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock (level)</span>
       <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock (trigger)</span>
@@ -570,9 +576,9 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
     (<code>clock_output.csv</code>). The beam's X/Y position, the pixel/line/frame clock states,
     and the scope trace are all lookups against that index — nothing here is re-simulated or
     approximated, it's the exact reconstructed data played back slower than its native 1 MSa/s
-    rate so it's watchable. Line Clock fires as a trigger, coincident with each line's 16th Pixel
-    Clock pulse — the "Line" progress readout tracks the beam's structural position for context,
-    independent of that trigger signal.</p>
+    rate so it's watchable. Line Clock fires two triggers per line — one coincident with the 1st
+    Pixel Clock pulse (line start), one with the 16th (line complete) — the "Line" progress
+    readout tracks the beam's structural position for context, independent of those two triggers.</p>
   </footer>
 </div>
 

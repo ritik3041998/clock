@@ -450,9 +450,9 @@ a {{ color: var(--accent); }}
     </div>
     <div class="clock-card line">
       <p class="kicker">Line Clock</p>
-      <p class="rule-text">Trigger. Pulses once, one sample wide, the instant a line's
-      <em>16th</em> pixel is counted — landing on the same sample as that pixel's Pixel Clock
-      pulse. Not held high across the line. 16 pulses per frame.</p>
+      <p class="rule-text">Trigger, twice per line: once on the line's <em>1st</em> pixel
+      (line-start), once on its <em>16th</em> (line-complete — landing on the same sample as
+      that pixel's Pixel Clock pulse). Not held high in between. 32 pulses per frame.</p>
     </div>
     <div class="clock-card frame">
       <p class="kicker">Frame Clock</p>
@@ -504,10 +504,10 @@ a {{ color: var(--accent); }}
         </tr>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-line)"></span>Line</td>
-          <td>Trigger</td>
+          <td>Trigger ×2</td>
           <td>493.87 µs</td>
           <td>2,024.8 Hz</td>
-          <td>16</td>
+          <td>32 (16 start + 16 complete)</td>
         </tr>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-frame)"></span>Frame</td>

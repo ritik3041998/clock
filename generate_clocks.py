@@ -19,12 +19,13 @@ Scan structure discovered in the data (16x16 = 256 pixels total):
 Clock definitions produced here:
     Pixel Clock  -> 1-sample-wide TRIGGER pulse at every laser==5 event,
                     i.e. every time a pixel is counted                (256 pulses)
-    Line Clock   -> 1-sample-wide TRIGGER pulse fired the instant a line's
-                    16th (last) pixel is counted -- coincides with that
-                    pixel's Pixel Clock pulse. NOT continuous/held high
-                    across the line; it is a count-complete trigger,
-                    same as Pixel Clock but firing once per 16 pixels
-                    instead of once per pixel                         (16 pulses)
+    Line Clock   -> TWO 1-sample-wide TRIGGER pulses per line, not a level:
+                      - "line start" pulse on the line's 1st pixel
+                      - "line complete" pulse on the line's 16th (last)
+                        pixel (coincides with that pixel's Pixel Clock pulse)
+                    LOW at every other sample, including for the whole
+                    duration in between -- it does not stay high across
+                    the line                                    (32 pulses)
     Frame Clock  -> HIGH (level) from the very first pixel of line 1 to the
                     very last pixel of line 16, LOW outside that -- one
                     on/off span = one frame counted                    (1 pulse)
@@ -103,11 +104,12 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
 
     for li, ln in enumerate(lines):
         start, end = ln[0], ln[-1]
-        # Line Clock is a trigger, not a level: it fires for exactly the one
-        # sample where the 16th pixel of this line is counted -- it does NOT
-        # stay high across the whole line. Line_Number metadata below still
+        # Line Clock is two triggers, not a level: one pulse when the line
+        # starts (1st pixel), one pulse when it completes (16th pixel). It
+        # does NOT stay high in between. Line_Number metadata below still
         # spans the full line (start..end) since that's just "which line is
         # this sample part of", independent of the trigger signal itself.
+        line_clock[start] = 1
         line_clock[end] = 1
         line_number[start:end + 1] = li
         for pi, sample in enumerate(ln):
@@ -200,7 +202,7 @@ def write_summary_csv(path, freqs, built):
             "Line Clock",
             f"{freqs['line_period_s']:.9f}", f"{freqs['line_period_s']*1e3:.6f}",
             f"{freqs['line_freq_hz']:.3f}",
-            len(built["lines"]),
+            len(built["lines"]) * 2,  # 2 trigger pulses per line: start + complete
         ])
         w.writerow([
             "Frame Clock",
@@ -292,7 +294,8 @@ def main():
           f"{sum(len(ln) for ln in built['lines'])} pixels/frame")
     print(f"Line Clock  : {freqs['line_freq_hz']:,.1f} Hz "
           f"(period {freqs['line_period_s']*1e6:.2f} us), "
-          f"{len(built['lines'])} lines/frame")
+          f"{len(built['lines'])} lines/frame "
+          f"({len(built['lines']) * 2} trigger pulses: start + complete per line)")
     print(f"Frame Clock : {freqs['frame_freq_hz']:,.3f} Hz "
           f"(period {freqs['frame_period_s']*1e3:.3f} ms)")
     print()
