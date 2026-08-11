@@ -1,10 +1,11 @@
 """
 build_animation.py
 ===================
-Self-contained generator for scan_animation.html — computes everything
-directly from Correct_16x16.csv / laser16x16.csv (same detection logic as
-generate_clocks.py) and emits a single static HTML page with an embedded
-live playback animation. No intermediate/scratch files required.
+Self-contained generator for scan_animation.html — reuses generate_clocks.py's
+own detection + delay logic directly (import, not a re-implementation) so
+the animation can never drift out of sync with the pipeline's actual clock
+semantics, and emits a single static HTML page with an embedded live
+playback animation. No intermediate/scratch files required.
 
 Clock semantics match generate_clocks.py:
     Pixel Clock -> trigger, 1 sample wide, once per pixel counted (256/frame)
@@ -12,40 +13,25 @@ Clock semantics match generate_clocks.py:
                    pixel) and line-complete (16th pixel, coincides with that
                    line's 16th Pixel Clock pulse) (32/frame). NOT held high
                    across the line.
-    Frame Clock -> level, high for the whole frame span (1/frame).
+    Frame Clock -> two triggers per frame, same style as Line Clock:
+                   frame-start (line 1's 1st pixel) and frame-complete
+                   (line 16's 16th pixel) (2/frame). NOT held high across
+                   the frame.
+
+Supports the same optional per-clock start delay as generate_clocks.py:
+
+    python build_animation.py --pixel-delay-us 2 --line-delay-us 8 --frame-delay-us 15
 
 Usage:
-    python build_animation.py
+    python build_animation.py [--sample-rate 1e6] [--pixel/line/frame-delay-us ...] [--out scan_animation.html]
 """
-import csv
+import argparse
 import json
 import base64
 
-SR = 1_000_000.0
-DT = 1.0 / SR
+import numpy as np
 
-
-def load_and_detect():
-    pos, laser = [], []
-    with open("Correct_16x16.csv", newline="") as f:
-        for r in csv.reader(f):
-            pos.append((float(r[0]), float(r[1])))
-    with open("laser16x16.csv", newline="") as f:
-        for r in csv.reader(f):
-            laser.append(float(r[0]))
-    n = len(pos)
-    pixel_idx = [i for i, v in enumerate(laser) if v >= 2.5]
-    lines = []
-    cur = [pixel_idx[0]]
-    for i in range(1, len(pixel_idx)):
-        if pixel_idx[i] - pixel_idx[i - 1] > 36:
-            lines.append(cur)
-            cur = []
-        cur.append(pixel_idx[i])
-    lines.append(cur)
-    assert len(lines) == 16 and all(len(l) == 16 for l in lines), \
-        f"unexpected grouping: {len(lines)} lines"
-    return n, pos, pixel_idx, lines
+import generate_clocks as gc
 
 
 def build_step_path(intervals, t_lo, t_hi, y_hi, y_lo, x0, x1):
@@ -71,8 +57,16 @@ def build_step_path(intervals, t_lo, t_hi, y_hi, y_lo, x0, x1):
     return " ".join(parts)
 
 
-def build_data():
-    n, pos, pixel_idx, lines = load_and_detect()
+def build_data(pos_csv, laser_csv, sample_rate_hz,
+               pixel_delay_samples=0, line_delay_samples=0, frame_delay_samples=0):
+    dt = 1.0 / sample_rate_hz
+    pos, laser = gc.load_csv_pair(pos_csv, laser_csv)
+    built = gc.build_clocks(pos, laser,
+                             pixel_delay_samples=pixel_delay_samples,
+                             line_delay_samples=line_delay_samples,
+                             frame_delay_samples=frame_delay_samples)
+    n = built["n"]
+    lines = built["lines"]  # physical/undelayed, for the structural "current line" readout
 
     # ---- canvas trajectory geometry ----
     xs = [p[0] for p in pos]
@@ -93,30 +87,33 @@ def build_data():
         traj_flat.append(round(nx(x), 2))
         traj_flat.append(round(ny(y), 2))
 
+    # Pixel dots sit at the beam position AT THE SAMPLE Pixel Clock actually
+    # asserts (the possibly-delayed trigger), matching every other output in
+    # this project -- not necessarily the physical laser-fire sample.
+    pixel_trigger_idx = sorted(int(i) for i in np.where(built["pixel_clock"] == 1)[0])
     pixels_js = []
-    for k, i in enumerate(pixel_idx):
+    for k, i in enumerate(pixel_trigger_idx):
         x, y = pos[i]
         pixels_js.append({"i": i, "x": round(nx(x), 2), "y": round(ny(y), 2),
                            "line": k // 16, "pix": k % 16})
 
-    line_spans_js = [[l[0], l[-1]] for l in lines]      # structural: for "which line" readout
-    # Line Clock is two triggers per line: line-start (1st pixel) and
-    # line-complete (16th pixel) -- 32 sample indices total, not 16.
-    line_triggers_js = []
-    for l in lines:
-        line_triggers_js.append(l[0])
-        line_triggers_js.append(l[-1])
-    # Frame Clock mirrors Line Clock: two triggers (start + complete), not a
-    # held-high level.
-    frame_js = [lines[0][0], lines[-1][-1]]
-    frame_triggers_js = [lines[0][0], lines[-1][-1]]
+    line_spans_js = [[int(l[0]), int(l[-1])] for l in lines]  # structural (physical): for "which line" readout
+    line_starts_i, line_ends_i = gc._trigger_edges_from_array(built["line_clock"])
+    line_triggers_js = [int(x) for x in list(line_starts_i) + list(line_ends_i)]
+    frame_starts_i, frame_ends_i = gc._trigger_edges_from_array(built["frame_clock"])
+    frame_js = [int(built["frame_start"]), int(built["frame_end"])]  # physical, unused by JS logic directly
+    frame_triggers_js = [int(x) for x in list(frame_starts_i) + list(frame_ends_i)]
 
     # ---- timing lane step paths ----
-    total_ms = n * DT * 1000
+    total_ms = n * dt * 1000
     pulse_w = 0.006  # ms, visible thin pulse
-    pixel_intervals = [(idx * DT * 1000, idx * DT * 1000 + pulse_w) for idx in pixel_idx]
-    line_intervals = [(t * DT * 1000, t * DT * 1000 + pulse_w) for t in line_triggers_js]
-    frame_intervals = [(t * DT * 1000, t * DT * 1000 + pulse_w) for t in frame_triggers_js]
+
+    def to_intervals(idx_list):
+        return [(i * dt * 1000, i * dt * 1000 + pulse_w) for i in idx_list]
+
+    pixel_intervals = to_intervals(pixel_trigger_idx)
+    line_intervals = to_intervals(line_triggers_js)
+    frame_intervals = to_intervals(frame_triggers_js)
 
     TW = 1000
     x0t, x1t = 10, TW - 10
@@ -141,20 +138,22 @@ def build_data():
         }
         # numbered bold(start)/dotted(complete) markers, same convention as report.html
         markers = {"line": {"starts": [], "ends": []}, "frame": {"starts": [], "ends": []}}
-        for k, l in enumerate(lines):
-            t = l[0] * DT * 1000
+        for k, s in enumerate(line_starts_i):
+            t = s * dt * 1000
             if t_lo <= t <= t_hi:
                 markers["line"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), f"L{k+1}"])
-        for l in lines:
-            t = l[-1] * DT * 1000
+        for e in line_ends_i:
+            t = e * dt * 1000
             if t_lo <= t <= t_hi:
                 markers["line"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
-        t = lines[0][0] * DT * 1000
-        if t_lo <= t <= t_hi:
-            markers["frame"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), "F1"])
-        t = lines[-1][-1] * DT * 1000
-        if t_lo <= t <= t_hi:
-            markers["frame"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
+        for k, s in enumerate(frame_starts_i):
+            t = s * dt * 1000
+            if t_lo <= t <= t_hi:
+                markers["frame"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), f"F{k+1}"])
+        for e in frame_ends_i:
+            t = e * dt * 1000
+            if t_lo <= t <= t_hi:
+                markers["frame"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
         return paths, markers
 
     paths, markers = render(0, total_ms)
@@ -175,7 +174,7 @@ def build_data():
             "paths": paths,
             "markers": markers,
         },
-        "sampleRateHz": SR,
+        "sampleRateHz": sample_rate_hz,
     }
     return data
 
@@ -216,15 +215,7 @@ def timing_lanes_svg(data):
     return "".join(parts)
 
 
-ARCHIVO = b64("fonts/Archivo.woff2")
-PLEX400 = b64("fonts/PlexMono-400.woff2")
-PLEX500 = b64("fonts/PlexMono-500.woff2")
-PLEX600 = b64("fonts/PlexMono-600.woff2")
-
-DATA_OBJ = build_data()
-DATA_JSON = json.dumps(DATA_OBJ, separators=(",", ":"))
-
-HTML = """<!-- Live scan + clock generation animation -->
+HTML_TEMPLATE = """<!-- Live scan + clock generation animation -->
 <title>Live Scan — Pixel/Line/Frame Clocks</title>
 <style>
 @font-face {{
@@ -537,7 +528,7 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
     <p class="subtitle">Playback of the reconstructed sample-by-sample scan, slowed down so each
     trigger is visible. All three clocks are the same kind of signal — 1-sample pulses, never
     held high. Pixel Clock fires once per pixel; Line Clock and Frame Clock each fire twice —
-    once on start, once on complete — at 1×16 and 1×256 the pixel rate.</p>
+    once on start, once on complete — at 1×16 and 1×256 the pixel rate.{DELAY_NOTE}</p>
   </header>
 
   <div class="transport">
@@ -932,19 +923,52 @@ const DATA = {DATA_JSON};
 </script>
 """
 
-HTML = HTML.format(
-    ARCHIVO=ARCHIVO, PLEX400=PLEX400, PLEX500=PLEX500, PLEX600=PLEX600,
-    DATA_JSON=DATA_JSON,
-    N_MINUS_1=DATA_OBJ["n"] - 1,
-    TOTAL_MS=f'{DATA_OBJ["n"] / DATA_OBJ["sampleRateHz"] * 1000:.3f}',
-    CANVAS_W=DATA_OBJ["canvasW"], CANVAS_H=DATA_OBJ["canvasH"],
-    TIMING_VB_W=DATA_OBJ["timing"]["viewW"], TIMING_VB_H=DATA_OBJ["timing"]["viewH"],
-    TIMING_VB_H_MARGIN=DATA_OBJ["timing"]["viewH"] + 22,
-    TIMING_VIEW_H=DATA_OBJ["timing"]["viewH"],
-    TIMING_LANES_SVG=timing_lanes_svg(DATA_OBJ),
-)
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--pos-csv", default="Correct_16x16.csv")
+    ap.add_argument("--laser-csv", default="laser16x16.csv")
+    ap.add_argument("--sample-rate", type=float, default=1e6)
+    ap.add_argument("--pixel-delay-us", type=float, default=0.0)
+    ap.add_argument("--line-delay-us", type=float, default=0.0)
+    ap.add_argument("--frame-delay-us", type=float, default=0.0)
+    ap.add_argument("--out", default="scan_animation.html")
+    args = ap.parse_args()
 
-with open("scan_animation.html", "w", encoding="utf-8", newline="\n") as f:
-    f.write(HTML)
+    dt_us = 1e6 / args.sample_rate
+    pixel_delay_samples = round(args.pixel_delay_us / dt_us)
+    line_delay_samples = round(args.line_delay_us / dt_us)
+    frame_delay_samples = round(args.frame_delay_us / dt_us)
 
-print("wrote scan_animation.html", len(HTML), "chars")
+    data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate,
+                           pixel_delay_samples, line_delay_samples, frame_delay_samples)
+    data_json = json.dumps(data_obj, separators=(",", ":"))
+
+    delay_note = ""
+    if args.pixel_delay_us or args.line_delay_us or args.frame_delay_us:
+        delay_note = (
+            f" Configured with a start delay: Pixel +{args.pixel_delay_us:.1f}&nbsp;µs, "
+            f"Line +{args.line_delay_us:.1f}&nbsp;µs, Frame +{args.frame_delay_us:.1f}&nbsp;µs "
+            f"from the physical event each clock marks."
+        )
+
+    html = HTML_TEMPLATE.format(
+        ARCHIVO=b64("fonts/Archivo.woff2"), PLEX400=b64("fonts/PlexMono-400.woff2"),
+        PLEX500=b64("fonts/PlexMono-500.woff2"), PLEX600=b64("fonts/PlexMono-600.woff2"),
+        DATA_JSON=data_json,
+        DELAY_NOTE=delay_note,
+        N_MINUS_1=data_obj["n"] - 1,
+        TOTAL_MS=f'{data_obj["n"] / data_obj["sampleRateHz"] * 1000:.3f}',
+        CANVAS_W=data_obj["canvasW"], CANVAS_H=data_obj["canvasH"],
+        TIMING_VB_W=data_obj["timing"]["viewW"], TIMING_VB_H=data_obj["timing"]["viewH"],
+        TIMING_VB_H_MARGIN=data_obj["timing"]["viewH"] + 22,
+        TIMING_VIEW_H=data_obj["timing"]["viewH"],
+        TIMING_LANES_SVG=timing_lanes_svg(data_obj),
+    )
+
+    with open(args.out, "w", encoding="utf-8", newline="\n") as f:
+        f.write(html)
+    print(f"wrote {args.out} ({len(html)} chars)")
+
+
+if __name__ == "__main__":
+    main()

@@ -81,16 +81,24 @@ whatever data it's given, so it isn't hard-coded to this one file.
 ```
 Correct_16x16.csv  ─┐
                      ├──►  generate_clocks.py  ──►  clock_output.csv   (full sample table)
-laser16x16.csv     ─┘                          ──►  clock_summary.csv (frequencies)
-                                                 ──►  viz_*.png        (quick-look plots)
+laser16x16.csv     ─┘   │                     ──►  clock_summary.csv (frequencies)
+                         │                     ──►  viz_*.png        (quick-look plots)
+                         │
+                         ├──►  build_report.py     ──►  report.html         (shareable write-up)
+                         └──►  build_animation.py  ──►  scan_animation.html (live playback)
 
 clock_output.csv  ──►  visualize_clocks.py  ──►  scan_trajectory.png
                                               ──►  timing_full_frame.png
                                               ──►  timing_zoom.png
-
-(report.html / build_report.py — one-off script that built the shareable
- write-up artifact; not part of the day-to-day pipeline)
 ```
+
+`build_report.py` and `build_animation.py` both `import generate_clocks` and
+call its `build_clocks()` directly — they don't re-implement pixel/line
+detection or the delay logic, so the report and the live animation can never
+drift out of sync with what the core pipeline actually does. Both accept
+the same `--sample-rate` / `--pixel-delay-us` / `--line-delay-us` /
+`--frame-delay-us` flags as `generate_clocks.py` (see §3.1's delay section)
+and regenerate their HTML output in place when re-run.
 
 ### 3.1 `generate_clocks.py` — the core script
 
@@ -225,12 +233,29 @@ python visualize_clocks.py --zoom-lines 4 --show   # wider zoom, pop up windows
 
 ### 3.3 `report.html` / `build_report.py` — the shareable write-up
 
-`build_report.py` is a one-off generator for the polished HTML report
-(published as a Claude Artifact). It reads the same underlying data and
-constructs inline SVG figures (not matplotlib) so the report renders
-crisply at any size and matches light/dark viewing themes. You don't need to
-run this for day-to-day use — it's here for provenance/reproducibility of
-the shared report, and depends on the font files under `fonts/`.
+`build_report.py` regenerates the polished HTML report (published as a
+Claude Artifact) straight from the two source CSVs, via `generate_clocks.
+build_clocks()` — the same detection/delay logic as §3.1, not a
+reimplementation. It constructs inline SVG figures (not matplotlib) so the
+report renders crisply at any size and matches light/dark viewing themes,
+and needs the font files under `fonts/`.
+
+```bash
+python build_report.py --sample-rate 1e6
+python build_report.py --line-delay-us 8 --frame-delay-us 15 --out report_delayed.html
+```
+
+### 3.4 `scan_animation.html` / `build_animation.py` — the live playback
+
+Same pattern as `build_report.py`: a self-contained generator, driven by
+`generate_clocks.build_clocks()`, that emits a single static HTML page with
+an embedded playback animation (beam position, LED clock states, a
+scrolling timing scope — see the published artifact for the full
+description). Also takes `--sample-rate` / `--pixel/line/frame-delay-us`.
+
+```bash
+python build_animation.py --pixel-delay-us 2 --line-delay-us 8 --frame-delay-us 15
+```
 
 ---
 
@@ -363,11 +388,13 @@ python visualize_clocks.py --zoom-lines 2
 |---|---|
 | `Correct_16x16.csv` | Raw input: galvo X/Y drive voltage per sample. |
 | `laser16x16.csv` | Raw input: laser strobe flag per sample. |
-| `generate_clocks.py` | **Core pipeline** — detects pixels/lines, builds all 3 clocks, computes frequencies, writes CSVs + quick-look PNGs. |
+| `generate_clocks.py` | **Core pipeline** — detects pixels/lines, builds all 3 clocks (with optional `--pixel/line/frame-delay-us`), computes frequencies, writes CSVs + quick-look PNGs. Also importable — `build_report.py`/`build_animation.py` call its functions directly. |
 | `visualize_clocks.py` | **Standalone plotting** — reads `clock_output.csv`, redraws the trajectory + timing figures anytime, in the report's color scheme. |
 | `clock_output.csv` | Full sample-by-sample table: voltages + all three clocks. |
-| `clock_summary.csv` | Period/frequency/event-count per clock. |
+| `clock_summary.csv` | Period/frequency/event-count/start-delay per clock. |
 | `viz_scan_pattern.png`, `viz_timing_full.png`, `viz_timing_zoom.png` | Quick-look plots written directly by `generate_clocks.py`. |
 | `scan_trajectory.png`, `timing_full_frame.png`, `timing_zoom.png` | Plots written by `visualize_clocks.py` (report color scheme). |
-| `report.html`, `build_report.py`, `fonts/` | Source for the published write-up artifact; not needed to run the pipeline. |
+| `report.html`, `build_report.py` | The published write-up artifact + its self-contained generator (imports `generate_clocks`, same delay flags). |
+| `scan_animation.html`, `build_animation.py` | The published live-playback artifact + its self-contained generator (imports `generate_clocks`, same delay flags). |
+| `fonts/` | Archivo + IBM Plex Mono `.woff2` files, embedded as data URIs by both build scripts. |
 | `16x16_lines.csv`, `16x16_meas.csv`, `scan_pattern.bmp`, `spatial_points.bmp` | Reference files from the original dataset, used to validate the reconstruction, not consumed by any script. |
