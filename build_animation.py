@@ -106,14 +106,17 @@ def build_data():
     for l in lines:
         line_triggers_js.append(l[0])
         line_triggers_js.append(l[-1])
+    # Frame Clock mirrors Line Clock: two triggers (start + complete), not a
+    # held-high level.
     frame_js = [lines[0][0], lines[-1][-1]]
+    frame_triggers_js = [lines[0][0], lines[-1][-1]]
 
     # ---- timing lane step paths ----
     total_ms = n * DT * 1000
     pulse_w = 0.006  # ms, visible thin pulse
     pixel_intervals = [(idx * DT * 1000, idx * DT * 1000 + pulse_w) for idx in pixel_idx]
     line_intervals = [(t * DT * 1000, t * DT * 1000 + pulse_w) for t in line_triggers_js]
-    frame_span_ms = (lines[0][0] * DT * 1000, lines[-1][-1] * DT * 1000)
+    frame_intervals = [(t * DT * 1000, t * DT * 1000 + pulse_w) for t in frame_triggers_js]
 
     TW = 1000
     x0t, x1t = 10, TW - 10
@@ -127,14 +130,34 @@ def build_data():
         y0 += LANE_H + GAP
     total_h = y0 - GAP
 
+    def Xmap(t_lo, t_hi, t):
+        return x0t + (t - t_lo) / (t_hi - t_lo) * (x1t - x0t)
+
     def render(t_lo, t_hi):
-        return {
+        paths = {
             "pixel": build_step_path(pixel_intervals, t_lo, t_hi, lanes["pixel"]["yHi"], lanes["pixel"]["yLo"], x0t, x1t),
             "line": build_step_path(line_intervals, t_lo, t_hi, lanes["line"]["yHi"], lanes["line"]["yLo"], x0t, x1t),
-            "frame": build_step_path([frame_span_ms], t_lo, t_hi, lanes["frame"]["yHi"], lanes["frame"]["yLo"], x0t, x1t),
+            "frame": build_step_path(frame_intervals, t_lo, t_hi, lanes["frame"]["yHi"], lanes["frame"]["yLo"], x0t, x1t),
         }
+        # numbered bold(start)/dotted(complete) markers, same convention as report.html
+        markers = {"line": {"starts": [], "ends": []}, "frame": {"starts": [], "ends": []}}
+        for k, l in enumerate(lines):
+            t = l[0] * DT * 1000
+            if t_lo <= t <= t_hi:
+                markers["line"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), f"L{k+1}"])
+        for l in lines:
+            t = l[-1] * DT * 1000
+            if t_lo <= t <= t_hi:
+                markers["line"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
+        t = lines[0][0] * DT * 1000
+        if t_lo <= t <= t_hi:
+            markers["frame"]["starts"].append([round(Xmap(t_lo, t_hi, t), 2), "F1"])
+        t = lines[-1][-1] * DT * 1000
+        if t_lo <= t <= t_hi:
+            markers["frame"]["ends"].append(round(Xmap(t_lo, t_hi, t), 2))
+        return paths, markers
 
-    paths = render(0, total_ms)
+    paths, markers = render(0, total_ms)
 
     data = {
         "n": n,
@@ -144,11 +167,13 @@ def build_data():
         "lineSpans": line_spans_js,
         "lineTriggers": line_triggers_js,
         "frame": frame_js,
+        "frameTriggers": frame_triggers_js,
         "timing": {
             "viewW": TW, "viewH": total_h,
             "x0": x0t, "x1": x1t,
             "lanes": lanes,
             "paths": paths,
+            "markers": markers,
         },
         "sampleRateHz": SR,
     }
@@ -174,6 +199,16 @@ def timing_lanes_svg(data):
     for name in ["frame", "line", "pixel"]:
         parts.append(f'<path d="{paths[name]}" class="trace-bright trace-{name}"/>')
     parts.append('</g>')
+    # numbered bold(start)/dotted(complete) trigger markers on Line/Frame lanes
+    markers = data["timing"].get("markers", {})
+    for name in ["line", "frame"]:
+        y_hi, y_lo = lanes[name]["yHi"], lanes[name]["yLo"]
+        m = markers.get(name, {"starts": [], "ends": []})
+        for x, text in m["starts"]:
+            parts.append(f'<line x1="{x}" y1="{y_lo}" x2="{x}" y2="{y_hi-6:.1f}" class="marker-start marker-{name}"/>')
+            parts.append(f'<text x="{x}" y="{y_hi-9:.1f}" text-anchor="middle" class="marker-label marker-label-{name}">{text}</text>')
+        for x in m["ends"]:
+            parts.append(f'<line x1="{x}" y1="{y_lo}" x2="{x}" y2="{y_hi}" class="marker-end marker-{name}"/>')
     for name in ["frame", "line", "pixel"]:
         y_hi, y_lo = lanes[name]["yHi"], lanes[name]["yLo"]
         mid = (y_hi + y_lo) / 2
@@ -476,6 +511,13 @@ input[type="range"]::-moz-range-thumb {{
 .timing-svg .lane-label-frame {{ fill: var(--c-frame); }}
 .timing-svg .lane-label-line  {{ fill: var(--c-line); }}
 .timing-svg .lane-label-pixel {{ fill: var(--c-pixel); }}
+.timing-svg .marker-start {{ stroke-width: 2; }}
+.timing-svg .marker-end {{ stroke-width: 1.2; stroke-dasharray: 3 3; opacity: 0.75; }}
+.timing-svg .marker-line {{ stroke: var(--c-line); }}
+.timing-svg .marker-frame {{ stroke: var(--c-frame); }}
+.timing-svg .marker-label {{ font-family: "Plex Mono", monospace; font-weight: 600; font-size: 9.5px; }}
+.timing-svg .marker-label-line {{ fill: var(--c-line); }}
+.timing-svg .marker-label-frame {{ fill: var(--c-frame); }}
 #playhead {{ stroke: var(--ink); stroke-width: 1.2; opacity: 0.8; }}
 
 footer {{ margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 11.5px; color: var(--muted); }}
@@ -493,9 +535,9 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
     <p class="eyebrow">Live Simulation · 16 × 16 Raster Scan</p>
     <h1>Watch the Laser Scan, Watch the Clocks Fire</h1>
     <p class="subtitle">Playback of the reconstructed sample-by-sample scan, slowed down so each
-    trigger is visible. Pixel Clock fires once per pixel; Line Clock fires twice per line — once
-    when it starts, once when it completes — never held high in between. Frame Clock is the one
-    gated level signal, on for the whole scan.</p>
+    trigger is visible. All three clocks are the same kind of signal — 1-sample pulses, never
+    held high. Pixel Clock fires once per pixel; Line Clock and Frame Clock each fire twice —
+    once on start, once on complete — at 1×16 and 1×256 the pixel rate.</p>
   </header>
 
   <div class="transport">
@@ -538,7 +580,7 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
           </div>
           <div class="led-card frame">
             <span class="led-dot" id="ledFrame"></span>
-            <span class="led-text"><span class="led-name">Frame Clock</span><span class="led-hz">119.775 Hz · 8.349 ms period</span><span class="led-kind">Level — on for the frame</span></span>
+            <span class="led-text"><span class="led-name">Frame Clock</span><span class="led-hz">119.775 Hz · 8.349 ms period</span><span class="led-kind">Trigger ×2 — frame start + complete</span></span>
             <span class="led-state" id="stateFrame">LOW</span>
           </div>
         </div>
@@ -559,14 +601,14 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
   <div class="panel scope-wrap">
     <p class="panel-title">Timing Scope — frame gates two trigger trains (pixel ×1/px, line ×2/line)</p>
     <div class="legend">
-      <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock (level)</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock (trigger)</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock (trigger ×2)</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock (trigger ×2)</span>
       <span class="legend-item"><span class="swatch" style="background:var(--c-pixel)"></span>Pixel Clock (trigger)</span>
     </div>
-    <svg id="timingSvg" class="timing-svg" viewBox="0 0 {TIMING_VB_W} {TIMING_VB_H}" role="img" aria-label="Live timing diagram of pixel, line and frame clocks">
+    <svg id="timingSvg" class="timing-svg" viewBox="0 -22 {TIMING_VB_W} {TIMING_VB_H_MARGIN}" role="img" aria-label="Live timing diagram of pixel, line and frame clocks">
       <title>Live timing diagram</title>
       {TIMING_LANES_SVG}
-      <line id="playhead" x1="0" y1="0" x2="0" y2="{TIMING_VIEW_H}"/>
+      <line id="playhead" x1="0" y1="-22" x2="0" y2="{TIMING_VIEW_H}"/>
     </svg>
   </div>
 
@@ -593,7 +635,7 @@ const DATA = {DATA_JSON};
   const pixels = DATA.pixels; // [{{i,x,y,line,pix}}]
   const lineSpans = DATA.lineSpans; // structural: [[s,e],...] -- for "current line" readout only
   const lineTriggers = DATA.lineTriggers; // the actual Line Clock trigger sample indices
-  const frameSpan = DATA.frame; // [s,e]
+  const frameTriggers = DATA.frameTriggers; // the actual Frame Clock trigger sample indices ([start, end])
   const timing = DATA.timing;
   const SR = DATA.sampleRateHz;
   const dtMs = 1000 / SR;
@@ -631,6 +673,8 @@ const DATA = {DATA_JSON};
   let lastFlashedPixel = -1;
   let lineFlashUntil = 0;
   let lastFlashedLine = -1;
+  let frameFlashUntil = 0;
+  let lastFlashedFrame = -1;
   let lastPixInLine = -1;
   let lastLine = -1;
 
@@ -647,6 +691,7 @@ const DATA = {DATA_JSON};
   const pixelByIndex = new Map();
   pixels.forEach((p, k) => pixelByIndex.set(p.i, k));
   const lineTriggerSet = new Set(lineTriggers);
+  const frameTriggerSet = new Set(frameTriggers);
 
   function findLine(idx) {{
     for (let k = 0; k < lineSpans.length; k++) {{
@@ -796,6 +841,10 @@ const DATA = {DATA_JSON};
           lastFlashedLine = i;
           lineFlashUntil = performance.now() + 220; // slightly longer: line trigger is the rarer event
         }}
+        if (frameTriggerSet.has(i)) {{
+          lastFlashedFrame = i;
+          frameFlashUntil = performance.now() + 320; // longest flash: rarest event of the three
+        }}
       }}
 
       if (currentIndex >= N - 1) {{
@@ -813,9 +862,9 @@ const DATA = {DATA_JSON};
     const curLine = findLine(idx);
     if (curLine !== lastLine) {{ lastPixInLine = -1; lastLine = curLine; }}
     const curPixInLine = curLine >= 0 ? lastPixInLine : -1;
-    const frameOn = idx >= frameSpan[0] && idx <= frameSpan[1];
     const pixelOn = performance.now() < pixelFlashUntil;
     const lineOn = performance.now() < lineFlashUntil;
+    const frameOn = performance.now() < frameFlashUntil;
 
     drawScan();
     updateTiming();
@@ -833,10 +882,12 @@ const DATA = {DATA_JSON};
     currentIndex = 0;
     lastFlashedPixel = -1;
     lastFlashedLine = -1;
+    lastFlashedFrame = -1;
     lastPixInLine = -1;
     lastLine = -1;
     pixelFlashUntil = 0;
     lineFlashUntil = 0;
+    frameFlashUntil = 0;
     playing = true;
     playBtn.textContent = "Pause";
   }});
@@ -854,6 +905,10 @@ const DATA = {DATA_JSON};
       lastFlashedLine = next;
       lineFlashUntil = performance.now() + 400;
     }}
+    if (frameTriggerSet.has(next)) {{
+      lastFlashedFrame = next;
+      frameFlashUntil = performance.now() + 400;
+    }}
   }});
   speedEl.addEventListener("input", () => {{
     speedMult = speedFromSlider(parseFloat(speedEl.value));
@@ -866,6 +921,7 @@ const DATA = {DATA_JSON};
     currentIndex = parseFloat(seekEl.value);
     lastFlashedPixel = -1;
     lastFlashedLine = -1;
+    lastFlashedFrame = -1;
     lastLine = -1;
   }});
 
@@ -883,6 +939,7 @@ HTML = HTML.format(
     TOTAL_MS=f'{DATA_OBJ["n"] / DATA_OBJ["sampleRateHz"] * 1000:.3f}',
     CANVAS_W=DATA_OBJ["canvasW"], CANVAS_H=DATA_OBJ["canvasH"],
     TIMING_VB_W=DATA_OBJ["timing"]["viewW"], TIMING_VB_H=DATA_OBJ["timing"]["viewH"],
+    TIMING_VB_H_MARGIN=DATA_OBJ["timing"]["viewH"] + 22,
     TIMING_VIEW_H=DATA_OBJ["timing"]["viewH"],
     TIMING_LANES_SVG=timing_lanes_svg(DATA_OBJ),
 )

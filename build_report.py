@@ -8,11 +8,13 @@ def timing_svg(d, title_id, lane_labels):
     x0, x1 = d["x0"], d["x1"]
     t_lo, t_hi = d["t_lo"], d["t_hi"]
     paths = d["paths"]
+    markers = d.get("markers", {})
     W = 1000
     label_w = 86
     vb_w = W + label_w
+    top_margin = 22
     parts = []
-    parts.append(f'<svg class="timing-svg" viewBox="0 0 {vb_w} {total_h+34}" role="img" aria-labelledby="{title_id}" preserveAspectRatio="xMinYMid meet">')
+    parts.append(f'<svg class="timing-svg" viewBox="0 -{top_margin} {vb_w} {total_h+34+top_margin}" role="img" aria-labelledby="{title_id}" preserveAspectRatio="xMinYMid meet">')
     parts.append(f'<title id="{title_id}">Pixel, line and frame clock timing diagram</title>')
     # gridlines every 1ms mapped through t range -- vertical guide lines
     parts.append(f'<g transform="translate({label_w},0)">')
@@ -21,6 +23,18 @@ def timing_svg(d, title_id, lane_labels):
         label = lane_labels[name]
         parts.append(f'<line x1="{x0}" y1="{y_lo}" x2="{x1}" y2="{y_lo}" class="baseline"/>')
         parts.append(f'<path d="{paths[name]}" class="trace trace-{name}"/>')
+    # Numbered bold(start)/dotted(complete) trigger markers on the Line and
+    # Frame lanes -- same convention as the matplotlib plots: a solid line
+    # labeled L1/F1/... at each "start" trigger, a dotted line at each
+    # "complete" trigger, no label needed since it shares the start's number.
+    for name in ["line", "frame"]:
+        y0, y_hi, y_lo = lanes[name]
+        m = markers.get(name, {"starts": [], "ends": []})
+        for x, text in m["starts"]:
+            parts.append(f'<line x1="{x:.2f}" y1="{y_lo}" x2="{x:.2f}" y2="{y_hi-6:.1f}" class="marker-start marker-{name}"/>')
+            parts.append(f'<text x="{x:.2f}" y="{y_hi-9:.1f}" text-anchor="middle" class="marker-label marker-label-{name}">{text}</text>')
+        for x in m["ends"]:
+            parts.append(f'<line x1="{x:.2f}" y1="{y_lo}" x2="{x:.2f}" y2="{y_hi:.1f}" class="marker-end marker-{name}"/>')
     parts.append('</g>')
     # lane labels (outside translated group, left column)
     for name, color_var in [("frame","--c-frame"), ("line","--c-line"), ("pixel","--c-pixel")]:
@@ -319,6 +333,17 @@ h2 {{ font-size: 20px; }}
 .timing-svg .lane-label-frame {{ fill: var(--c-frame); }}
 .timing-svg .lane-label-line  {{ fill: var(--c-line); }}
 .timing-svg .lane-label-pixel {{ fill: var(--c-pixel); }}
+.timing-svg .marker-start {{ stroke-width: 2; }}
+.timing-svg .marker-end {{ stroke-width: 1.2; stroke-dasharray: 3 3; opacity: 0.75; }}
+.timing-svg .marker-line {{ stroke: var(--c-line); }}
+.timing-svg .marker-frame {{ stroke: var(--c-frame); }}
+.timing-svg .marker-label {{
+  font-family: "Plex Mono", monospace;
+  font-weight: 600;
+  font-size: 9.5px;
+}}
+.timing-svg .marker-label-line {{ fill: var(--c-line); }}
+.timing-svg .marker-label-frame {{ fill: var(--c-frame); }}
 .timing-block + .timing-block {{ margin-top: 30px; }}
 .timing-title {{
   font-family: "Plex Mono", monospace;
@@ -440,8 +465,8 @@ a {{ color: var(--accent); }}
 
 <section id="derivation">
   <div class="section-head"><span class="section-num">02</span><h2>Derivation rules</h2></div>
-  <p class="section-desc">Pixel and Line Clock are both count-complete <em>triggers</em> — a
-  single sample wide, not held high. Frame Clock is the one gated <em>level</em> signal.</p>
+  <p class="section-desc">All three clocks are the same kind of signal — 1-sample
+  <em>triggers</em>, never held high. They differ only in how often they fire.</p>
   <div class="card-row">
     <div class="clock-card pixel">
       <p class="kicker">Pixel Clock</p>
@@ -451,22 +476,25 @@ a {{ color: var(--accent); }}
     <div class="clock-card line">
       <p class="kicker">Line Clock</p>
       <p class="rule-text">Trigger, twice per line: once on the line's <em>1st</em> pixel
-      (line-start), once on its <em>16th</em> (line-complete — landing on the same sample as
-      that pixel's Pixel Clock pulse). Not held high in between. 32 pulses per frame.</p>
+      (line-start, <b style="color:var(--c-line)">bold</b> marker), once on its <em>16th</em>
+      (line-complete, <span style="border-bottom:1px dashed var(--c-line)">dotted</span> marker
+      — landing on that pixel's Pixel Clock pulse). 32 pulses per frame.</p>
     </div>
     <div class="clock-card frame">
       <p class="kicker">Frame Clock</p>
-      <p class="rule-text">Level. Goes high on line 1's first pixel, stays high through line 16's
-      last pixel, then drops — closing the frame. One on/off span per frame.</p>
+      <p class="rule-text">Trigger, twice per frame: once on line 1's 1st pixel (frame-start,
+      <b style="color:var(--c-frame)">bold</b> marker), once on line 16's 16th pixel
+      (frame-complete, <span style="border-bottom:1px dashed var(--c-frame)">dotted</span>
+      marker). 2 pulses per frame.</p>
     </div>
   </div>
 </section>
 
 <section id="timing">
   <div class="section-head"><span class="section-num">03</span><h2>Timing diagram</h2></div>
-  <p class="section-desc">Frame Clock gates the whole scan; Pixel and Line Clock are two
-  trigger trains ticking inside it, at 1× and 16× the pixel rate. Hover any pulse for its
-  sample index and timestamp.</p>
+  <p class="section-desc">Bold numbered markers (L1, L2, … / F1) mark each "start" trigger;
+  dotted markers mark the matching "complete" trigger. Hover any pulse for its sample index
+  and timestamp.</p>
   <div class="legend">
     <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock</span>
     <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock</span>
@@ -511,10 +539,10 @@ a {{ color: var(--accent); }}
         </tr>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-frame)"></span>Frame</td>
-          <td>Level</td>
+          <td>Trigger ×2</td>
           <td>8.349 ms</td>
           <td>119.775 Hz</td>
-          <td>1</td>
+          <td>2 (start + complete)</td>
         </tr>
       </tbody>
     </table>

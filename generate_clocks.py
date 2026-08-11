@@ -26,9 +26,16 @@ Clock definitions produced here:
                     LOW at every other sample, including for the whole
                     duration in between -- it does not stay high across
                     the line                                    (32 pulses)
-    Frame Clock  -> HIGH (level) from the very first pixel of line 1 to the
-                    very last pixel of line 16, LOW outside that -- one
-                    on/off span = one frame counted                    (1 pulse)
+    Frame Clock  -> TWO 1-sample-wide TRIGGER pulses per frame, same style as
+                    Line Clock:
+                      - "frame start" pulse on line 1's 1st pixel
+                      - "frame complete" pulse on line 16's 16th (last) pixel
+                    LOW at every other sample -- not held high across the
+                    frame                                           (2 pulses)
+
+All three clocks are the same kind of signal (1-sample triggers, never held
+high) -- they differ only in how often they fire: Pixel every 1 pixel, Line
+every 16 pixels (start + complete), Frame every 256 pixels (start + complete).
 
 Outputs:
     clock_output.csv    -> full sample-by-sample table (voltages + all clocks)
@@ -115,8 +122,12 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36):
         for pi, sample in enumerate(ln):
             pixel_in_line[sample] = pi
 
+    # Frame Clock mirrors Line Clock: two triggers, not a level -- one when
+    # the frame starts (line 1's 1st pixel), one when it completes (line
+    # 16's 16th pixel). Not held high across the frame.
     frame_start, frame_end = lines[0][0], lines[-1][-1]
-    frame_clock[frame_start:frame_end + 1] = 1
+    frame_clock[frame_start] = 1
+    frame_clock[frame_end] = 1
 
     return {
         "n": n,
@@ -208,7 +219,7 @@ def write_summary_csv(path, freqs, built):
             "Frame Clock",
             f"{freqs['frame_period_s']:.9f}", f"{freqs['frame_period_s']*1e3:.6f}",
             f"{freqs['frame_freq_hz']:.3f}",
-            1,
+            2,  # 2 trigger pulses per frame: start + complete
         ])
 
 
@@ -233,6 +244,22 @@ def plot_scan_pattern(pos, built, out_path):
     plt.close(fig)
 
 
+def _annotate_triggers(ax, starts, ends, dt, s0, s1, prefix, color):
+    """Draw a bold solid line + number at each 'start' trigger and a dotted
+    line at each 'complete/off' trigger, within the plotted sample window."""
+    t_lo, t_hi = s0 * dt * 1e3, s1 * dt * 1e3
+    for k, s in enumerate(starts):
+        t = s * dt * 1e3
+        if t_lo <= t <= t_hi:
+            ax.axvline(t, color=color, linewidth=2.0, linestyle="-", alpha=0.9, zorder=4)
+            ax.text(t, 1.28, f"{prefix}{k+1}", ha="center", va="bottom",
+                    fontsize=7.5, color=color, clip_on=False)
+    for e in ends:
+        t = e * dt * 1e3
+        if t_lo <= t <= t_hi:
+            ax.axvline(t, color=color, linewidth=1.3, linestyle=(0, (2, 2)), alpha=0.8, zorder=4)
+
+
 def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix=""):
     n = built["n"]
     dt = 1.0 / sample_rate_hz
@@ -241,7 +268,7 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
     s0, s1 = sample_range
     t = np.arange(s0, s1) * dt * 1e3  # ms
 
-    fig, axes = plt.subplots(3, 1, figsize=(11, 6), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11, 6.6), sharex=True)
     signals = [
         ("Pixel Clock", built["pixel_clock"][s0:s1], "tab:orange"),
         ("Line Clock", built["line_clock"][s0:s1], "tab:blue"),
@@ -252,6 +279,15 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
         ax.set_ylim(-0.2, 1.2)
         ax.set_ylabel(label)
         ax.grid(alpha=0.3)
+
+    # Numbered bold(start)/dotted(complete) markers: L1, L2, ... on the Line
+    # Clock lane, F1 on the Frame Clock lane. Pixel Clock is left plain since
+    # every pulse there is already unambiguous (one event = one pixel).
+    line_starts = [ln[0] for ln in built["lines"]]
+    line_ends = [ln[-1] for ln in built["lines"]]
+    _annotate_triggers(axes[1], line_starts, line_ends, dt, s0, s1, "L", "tab:blue")
+    _annotate_triggers(axes[2], [built["frame_start"]], [built["frame_end"]], dt, s0, s1, "F", "tab:green")
+
     axes[-1].set_xlabel("Time (ms)")
     fig.suptitle(f"Clock Timing{title_suffix}")
     fig.tight_layout()
