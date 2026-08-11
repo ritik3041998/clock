@@ -276,6 +276,29 @@ requirement; every value is editable live afterward.
 python build_animation.py --line-delay-us 12   # page opens with Line Delay pre-filled to 12 µs
 ```
 
+#### Why one frame takes way more than 8.349 ms to watch
+
+The frequency summary (§4) says a frame is 8.349 ms — that's correct, and
+it's what the page's **Sim. time** readout counts up. But 8.349 ms is
+faster than a human eye can register a single blink, let alone 256
+individual pixel pulses, so the animation deliberately plays back in slow
+motion. Two different clocks are running at once:
+
+- **Simulated time** — what a real 1 MSa/s clock experiences: 8,349
+  samples × 1 µs = 8.349 ms. This is the number in the readouts and the
+  report; it never changes regardless of playback speed.
+- **Wall-clock playback time** — how long *you* actually watch it take in
+  the browser, controlled by the **Speed** slider.
+
+The slider scales a baseline of `BASE_SAMPLES_PER_SEC = 200` (see the
+`speedFromSlider()` function in `build_animation.py`'s embedded JS),
+exponentially from 0.1× to 10× as you drag it. At the default position
+(~0.79×) that works out to roughly **150 ms of real time per pixel-to-pixel
+step** — enough for each LED flash to actually be visible — which stretches
+the whole 8.349 ms frame out to **~52 seconds** of real playback, about
+6,300× slower than the real clock. Drag the Speed slider to the right for a
+faster (down to ~4 seconds/frame at max) but less readable playback.
+
 ---
 
 ## 4. The outputs, explained column by column
