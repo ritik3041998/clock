@@ -42,8 +42,8 @@ def build_data(pos_csv, laser_csv, sample_rate_hz):
     ys = [p[1] for p in pos]
     xmin, xmax = min(xs), max(xs)
     ymin, ymax = min(ys), max(ys)
-    PAD = 48
-    W, H = 900, 720
+    PAD = 32
+    W, H = 460, 380
 
     def nx(x):
         return PAD + (x - xmin) / (xmax - xmin) * (W - 2 * PAD)
@@ -62,7 +62,7 @@ def build_data(pos_csv, laser_csv, sample_rate_hz):
 
     TW = 1000
     x0t, x1t = 10, TW - 10
-    LANE_H, GAP = 92, 8
+    LANE_H, GAP = 54, 5
     y0 = 0
     lanes = {}
     for name in ["frame", "line", "pixel"]:
@@ -219,7 +219,7 @@ body {{
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }}
-.wrap {{ max-width: 1180px; margin: 0 auto; padding: 40px 22px 80px; }}
+.wrap {{ max-width: 860px; margin: 0 auto; padding: 20px 18px 24px; }}
 
 h1 {{
   font-family: "Archivo", system-ui, sans-serif;
@@ -227,35 +227,29 @@ h1 {{
   letter-spacing: -0.01em;
   text-wrap: balance;
   margin: 0;
-  font-size: clamp(24px, 3.4vw, 32px);
+  font-size: clamp(18px, 2.4vw, 22px);
   line-height: 1.14;
 }}
 .eyebrow {{
   font-weight: 600;
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--accent);
-  margin: 0 0 10px;
-}}
-.subtitle {{
-  margin: 12px 0 0;
-  max-width: 66ch;
-  color: var(--ink-dim);
-  font-size: 13.5px;
+  margin: 0 0 4px;
 }}
 
 /* ---- transport bar ---- */
 .transport {{
-  margin-top: 26px;
+  margin-top: 12px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   flex-wrap: wrap;
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: 8px;
-  padding: 12px 16px;
+  padding: 8px 12px;
   box-shadow: var(--shadow);
 }}
 .btn {{
@@ -307,16 +301,16 @@ input[type="range"]::-moz-range-thumb {{
 .check-group input {{ accent-color: var(--accent); width: 14px; height: 14px; }}
 
 /* ---- seek bar ---- */
-.seek-row {{ margin-top: 12px; display: flex; align-items: center; gap: 12px; }}
+.seek-row {{ margin-top: 8px; display: flex; align-items: center; gap: 12px; }}
 #seek {{ flex: 1; width: 100%; height: 3px; }}
-.seek-time {{ font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }}
+.seek-time {{ font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }}
 
 /* ---- controls panel (start pixel + delay) ---- */
-.controls-panel {{ margin-top: 18px; }}
+.controls-panel {{ margin-top: 10px; }}
 .control-row {{
   display: flex;
   align-items: flex-end;
-  gap: 14px;
+  gap: 10px;
   flex-wrap: wrap;
 }}
 .control-field {{
@@ -352,49 +346,49 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
 
 /* ---- main grid ---- */
 .stage {{
-  margin-top: 24px;
+  margin-top: 10px;
   display: grid;
-  grid-template-columns: 1.35fr 0.9fr;
-  gap: 18px;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 10px;
 }}
-@media (max-width: 880px) {{ .stage {{ grid-template-columns: 1fr; }} }}
+@media (max-width: 640px) {{ .stage {{ grid-template-columns: 1fr; }} }}
 
 .panel {{
   background: var(--surface);
   border: 1px solid var(--rule);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  padding: 16px;
+  padding: 10px;
 }}
 .panel-title {{
   font-weight: 600;
-  font-size: 10.5px;
+  font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--muted);
-  margin: 0 0 10px;
+  margin: 0 0 6px;
 }}
 #scanCanvas {{ width: 100%; height: auto; display: block; border-radius: 4px; }}
 
 /* ---- status column ---- */
-.status-col {{ display: flex; flex-direction: column; gap: 14px; }}
-.led-row {{ display: flex; flex-direction: column; gap: 10px; }}
+.status-col {{ display: flex; flex-direction: column; gap: 8px; }}
+.led-row {{ display: flex; flex-direction: column; gap: 6px; }}
 .led-card {{
   display: grid;
-  grid-template-columns: 22px 1fr auto;
+  grid-template-columns: 18px 1fr auto;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   border: 1px solid var(--rule);
   border-left: 3px solid var(--led-color);
   border-radius: 5px;
-  padding: 10px 12px;
+  padding: 6px 9px;
   background: var(--surface-2);
 }}
 .led-card.pixel {{ --led-color: var(--c-pixel); }}
 .led-card.line  {{ --led-color: var(--c-line); }}
 .led-card.frame {{ --led-color: var(--c-frame); }}
 .led-dot {{
-  width: 13px; height: 13px;
+  width: 11px; height: 11px;
   border-radius: 50%;
   background: var(--led-color);
   opacity: 0.18;
@@ -402,11 +396,11 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
 }}
 .led-dot.on {{ opacity: 1; box-shadow: 0 0 10px 1px var(--led-color); }}
 .led-text {{ display: flex; flex-direction: column; gap: 1px; }}
-.led-name {{ font-family: "Archivo", sans-serif; font-weight: 700; font-size: 12.5px; color: var(--ink); }}
-.led-hz {{ font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }}
-.led-kind {{ font-size: 9.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }}
+.led-name {{ font-family: "Archivo", sans-serif; font-weight: 700; font-size: 11.5px; color: var(--ink); }}
+.led-hz {{ font-size: 9.5px; color: var(--muted); font-variant-numeric: tabular-nums; }}
+.led-kind {{ font-size: 8.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }}
 .led-state {{
-  font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
+  font-size: 9px; font-weight: 600; letter-spacing: 0.06em;
   color: var(--muted); text-transform: uppercase;
   font-variant-numeric: tabular-nums;
 }}
@@ -414,30 +408,30 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
 .readout-grid {{
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 6px;
 }}
 .readout {{
   border: 1px solid var(--rule);
   border-radius: 5px;
-  padding: 10px 12px;
+  padding: 7px 9px;
   background: var(--surface-2);
 }}
-.readout .k {{ font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }}
+.readout .k {{ font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }}
 .readout .v {{
   font-family: "Archivo", sans-serif;
   font-weight: 800;
-  font-size: 17px;
+  font-size: 14px;
   color: var(--ink);
-  margin-top: 3px;
+  margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }}
-.readout .v small {{ font-family: "Plex Mono", monospace; font-weight: 500; font-size: 11px; color: var(--ink-dim); }}
+.readout .v small {{ font-family: "Plex Mono", monospace; font-weight: 500; font-size: 10px; color: var(--ink-dim); }}
 
 /* ---- timing scope ---- */
-.scope-wrap {{ margin-top: 18px; }}
-.legend {{ display: flex; gap: 16px; margin: 0 0 10px; flex-wrap: wrap; }}
-.legend-item {{ display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-dim); }}
-.swatch {{ width: 11px; height: 11px; border-radius: 2px; flex: none; }}
+.scope-wrap {{ margin-top: 10px; }}
+.legend {{ display: flex; gap: 12px; margin: 0 0 6px; flex-wrap: wrap; }}
+.legend-item {{ display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--ink-dim); }}
+.swatch {{ width: 10px; height: 10px; border-radius: 2px; flex: none; }}
 #timingSvg {{ width: 100%; height: auto; display: block; }}
 .timing-svg .baseline {{ stroke: var(--rule-strong); stroke-width: 1; }}
 .timing-svg .trace-dim {{ fill: none; stroke-width: 1.6; opacity: 0.28; }}
@@ -458,9 +452,6 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
 .timing-svg .marker-label-frame {{ fill: var(--c-frame); }}
 #playhead {{ stroke: var(--ink); stroke-width: 1.2; opacity: 0.8; }}
 
-footer {{ margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--rule); font-size: 11.5px; color: var(--muted); }}
-footer p {{ max-width: 70ch; margin: 4px 0; }}
-
 .sr-only {{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }}
 
 @media (prefers-reduced-motion: reduce) {{
@@ -472,10 +463,6 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
   <header>
     <p class="eyebrow">Live Simulation · 16 × 16 Raster Scan</p>
     <h1>Watch the Laser Scan, Watch the Clocks Fire</h1>
-    <p class="subtitle">Playback of the reconstructed sample-by-sample scan, slowed down so each
-    trigger is visible. All three clocks are the same kind of signal — 1-sample pulses, never
-    held high. Adjust each clock's start delay or jump straight to a pixel below — both recompute
-    live, right in this page.</p>
   </header>
 
   <div class="transport">
@@ -572,16 +559,6 @@ footer p {{ max-width: 70ch; margin: 4px 0; }}
     </svg>
   </div>
 
-  <footer>
-    <p><b style="color:var(--ink)">How this works:</b> the page ships the physical (undelayed)
-    scan structure — 256 pixel events grouped into 16 lines — and computes every clock trigger
-    live, client-side, from the delay values above. Editing a delay and clicking Apply
-    recomputes the pixel dots, the LED flash timing, and the timing-scope traces in place; no
-    server round-trip. A clock's own period is unaffected by its delay (a constant offset cancels
-    out of that measurement) — only its phase relative to the other two clocks moves. If a delay
-    pushes a trigger past the end of the recorded window, it's dropped and reported above,
-    exactly like <code>generate_clocks.py</code>'s <code>[warn]</code> messages.</p>
-  </footer>
 </div>
 
 <script>
@@ -796,7 +773,7 @@ const DATA = {DATA_JSON};
     for (let i = 2; i < traj.length; i += 2) ctx.lineTo(traj[i], traj[i+1]);
     ctx.strokeStyle = inkDim;
     ctx.globalAlpha = 0.22;
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 0.9;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.stroke();
@@ -808,7 +785,7 @@ const DATA = {DATA_JSON};
     for (let i = 1; i <= upTo; i++) ctx.lineTo(traj[i*2], traj[i*2+1]);
     ctx.strokeStyle = trailColor;
     ctx.globalAlpha = 0.85;
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = 1.1;
     ctx.stroke();
     ctx.globalAlpha = 1;
 
@@ -819,11 +796,11 @@ const DATA = {DATA_JSON};
       const isLineFlashing = isLineTrigger && p.i === lastFlashedLine && performance.now() < lineFlashUntil;
       const glowColor = isLineFlashing ? lineColor : pixelColor;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, (isFlashing || isLineFlashing) ? 6.6 : (isLit ? (isLineTrigger ? 5.0 : 4.4) : 3.2), 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, (isFlashing || isLineFlashing) ? 3.6 : (isLit ? (isLineTrigger ? 2.8 : 2.4) : 1.8), 0, Math.PI * 2);
       if (isFlashing || isLineFlashing) {{
         ctx.fillStyle = glowColor;
         ctx.shadowColor = glowColor;
-        ctx.shadowBlur = 15;
+        ctx.shadowBlur = 9;
       }} else if (isLit) {{
         ctx.fillStyle = isLineTrigger ? lineColor : pixelColor;
         ctx.shadowBlur = 0;
@@ -831,7 +808,7 @@ const DATA = {DATA_JSON};
         ctx.fillStyle = "transparent";
         ctx.strokeStyle = inkDim;
         ctx.globalAlpha = 0.45;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.8;
         ctx.shadowBlur = 0;
       }}
       ctx.fill();
@@ -846,15 +823,15 @@ const DATA = {DATA_JSON};
     const bx = traj[i0*2] + (traj[i1*2] - traj[i0*2]) * frac;
     const by = traj[i0*2+1] + (traj[i1*2+1] - traj[i0*2+1]) * frac;
     ctx.beginPath();
-    ctx.arc(bx, by, 7, 0, Math.PI * 2);
+    ctx.arc(bx, by, 4, 0, Math.PI * 2);
     ctx.fillStyle = cssColor("--accent");
     ctx.shadowColor = cssColor("--accent");
-    ctx.shadowBlur = 16;
+    ctx.shadowBlur = 10;
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.beginPath();
-    ctx.arc(bx, by, 7, 0, Math.PI * 2);
-    ctx.lineWidth = 2;
+    ctx.arc(bx, by, 4, 0, Math.PI * 2);
+    ctx.lineWidth = 1.3;
     ctx.strokeStyle = surface;
     ctx.stroke();
 
