@@ -359,7 +359,17 @@ def main():
     ap.add_argument("--laser-csv", default="laser16x16.csv")
     ap.add_argument("--sample-rate", type=float, default=1e6,
                      help="DAQ sample rate in Hz (default 1e6 = 1 MSa/s)")
-    ap.add_argument("--pixels-per-line", type=int, default=16)
+    ap.add_argument("--pixels-per-line", type=int, default=16,
+                     help="Expected pixels/line, used only for the sanity-check "
+                          "warning -- line detection itself is gap-based and "
+                          "works for any NxN (or NxM) grid (default 16)")
+    ap.add_argument("--gap-split", type=int, default=36,
+                     help="Sample-gap threshold that separates 'still inside "
+                          "the same line' pixel spacing from 'moved to the "
+                          "next line' flyback gaps. Must sit strictly between "
+                          "the two on your data -- inspect consecutive "
+                          "laser-on sample gaps if the default (tuned for the "
+                          "16x16 dataset) misdetects your line count (default 36)")
     ap.add_argument("--out-prefix", default="")
     ap.add_argument("--pixel-delay-us", type=float, default=0.0,
                      help="Delay Pixel Clock's triggers this many microseconds "
@@ -379,6 +389,7 @@ def main():
 
     pos, laser = load_csv_pair(args.pos_csv, args.laser_csv)
     built = build_clocks(pos, laser, pixels_per_line=args.pixels_per_line,
+                          gap_split=args.gap_split,
                           pixel_delay_samples=pixel_delay_samples,
                           line_delay_samples=line_delay_samples,
                           frame_delay_samples=frame_delay_samples)

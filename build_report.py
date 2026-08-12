@@ -76,11 +76,16 @@ def compute_report_data(pos, built, sample_rate_hz):
     # visualize_clocks.py's scan_trajectory.png behaviour exactly.
     pixel_trigger_idx = sorted(int(i) for i in np.where(built["pixel_clock"] == 1)[0])
     dots_parts = []
-    for k, idx in enumerate(pixel_trigger_idx):
+    for idx in pixel_trigger_idx:
         x, y = pos[idx]
+        # Pixel/line numbering read straight from build_clocks' own
+        # Line_Number/Pixel_In_Line metadata -- correct for any N-line,
+        # M-pixels-per-line grid (not just square 16x16).
+        pix_num = built["pixel_in_line"][idx] + 1
+        line_num = built["line_number"][idx] + 1
         dots_parts.append(
             f'<circle class="dot" cx="{nx(x):.1f}" cy="{ny(y):.1f}" r="4.2">'
-            f'<title>Pixel {k % 16 + 1} / Line {k // 16 + 1} - sample {idx} - '
+            f'<title>Pixel {pix_num} / Line {line_num} - sample {idx} - '
             f't={idx*dt*1000:.3f} ms</title></circle>'
         )
     dots_svg = "\n".join(dots_parts)
@@ -157,10 +162,16 @@ def compute_report_data(pos, built, sample_rate_hz):
     ) * dt * 1000
     d_zoom = render(0, zoom_end)
 
+    num_lines = len(built["lines"])
+    total_pixels = sum(len(ln) for ln in built["lines"])
+    avg_ppl = total_pixels / num_lines
+    ppl_label = str(int(avg_ppl)) if avg_ppl == int(avg_ppl) else f"{avg_ppl:.1f}"
+
     return {
         "traj_pts": traj_pts, "dots_svg": dots_svg,
         "d_full": d_full, "d_zoom": d_zoom,
         "n": n, "total_ms": total_ms,
+        "num_lines": num_lines, "total_pixels": total_pixels, "ppl_label": ppl_label,
     }
 
 
@@ -203,7 +214,7 @@ def timing_svg(d, title_id, lane_labels):
 
 
 HTML_TEMPLATE = """<!-- Pixel/Line/Frame clock reconstruction report -->
-<title>Clock Reconstruction — 16×16 Raster Scan</title>
+<title>Clock Reconstruction — {GRID_LABEL} Raster Scan</title>
 <style>
 @font-face {{
   font-family: "Archivo";
@@ -589,15 +600,15 @@ a {{ color: var(--accent); }}
 <div class="wrap">
 
 <header class="report-head">
-  <p class="eyebrow">Signal Reconstruction · 16 × 16 Point Raster Scan</p>
+  <p class="eyebrow">Signal Reconstruction · {GRID_LABEL} Point Raster Scan</p>
   <h1>Pixel, Line &amp; Frame Clocks<br>from Laser Strobe &amp; Galvo Position Logs</h1>
-  <p class="subtitle">Derived from <code>Correct_16x16.csv</code> (X/Y scanner drive voltages) and
-  <code>laser16x16.csv</code> (laser strobe flag), sample-aligned row for row. 256 laser-fire
-  events group cleanly into 16 lines of 16 pixels — the grouping below was detected automatically,
-  with zero mismatches against that 16×16 target.</p>
+  <p class="subtitle">Derived from <code>{POS_CSV}</code> (X/Y scanner drive voltages) and
+  <code>{LASER_CSV}</code> (laser strobe flag), sample-aligned row for row. {TOTAL_PIXELS} laser-fire
+  events group cleanly into {NUM_LINES} lines of {PPL_LABEL} pixels — the grouping below was detected automatically,
+  with zero mismatches against that {NUM_LINES}-line target.</p>
   <div class="meta-row">
-    <span class="meta-chip">Grid <b>16 × 16</b></span>
-    <span class="meta-chip">Pixels/frame <b>256</b></span>
+    <span class="meta-chip">Grid <b>{GRID_LABEL}</b></span>
+    <span class="meta-chip">Pixels/frame <b>{TOTAL_PIXELS}</b></span>
     <span class="meta-chip">Sample rate <b>{SAMPLE_RATE_STR} Hz</b></span>
     <span class="meta-chip">Samples <b>{N}</b></span>
     <span class="meta-chip">Generated <b>{GENERATED_DATE}</b></span>
@@ -608,14 +619,14 @@ a {{ color: var(--accent); }}
 <section id="geometry">
   <div class="section-head"><span class="section-num">01</span><h2>Scan geometry</h2></div>
   <p class="section-desc">The galvo traces a vertical serpentine: down a column, round a turn,
-  up the next column, 16 times over. Each orange dot is one Pixel-Clock trigger — the same shape
+  up the next column, {NUM_LINES} times over. Each orange dot is one Pixel-Clock trigger — the same shape
   as <code>scan_pattern.bmp</code> / <code>spatial_points.bmp</code>, reconstructed here from the
   raw voltage trace rather than pre-rendered.</p>
   <div class="panel">
     <div class="traj-figure">
       {TRAJ_SVG}
     </div>
-    <p class="figure-caption">X/Y galvo drive voltage, {N} samples · dots mark the 256 samples where Pixel Clock triggers.</p>
+    <p class="figure-caption">X/Y galvo drive voltage, {N} samples · dots mark the {TOTAL_PIXELS} samples where Pixel Clock triggers.</p>
   </div>
 </section>
 
@@ -627,19 +638,20 @@ a {{ color: var(--accent); }}
     <div class="clock-card pixel">
       <p class="kicker">Pixel Clock</p>
       <p class="rule-text">Trigger. Pulses once, one sample wide, every time the laser strobe
-      reads <code>5</code>{PIXEL_DELAY_NOTE}. 256 pulses per frame — one per pixel counted.</p>
+      reads <code>5</code>{PIXEL_DELAY_NOTE}. {TOTAL_PIXELS} pulses per frame — one per pixel counted.</p>
     </div>
     <div class="clock-card line">
       <p class="kicker">Line Clock</p>
-      <p class="rule-text">Trigger, twice per line: once on the line's <em>1st</em> pixel
-      (line-start, <b style="color:var(--c-line)">bold</b> marker), once on its <em>16th</em>
+      <p class="rule-text">Trigger, twice per line: once on the line's <em>first</em> pixel
+      (line-start, <b style="color:var(--c-line)">bold</b> marker), once on its <em>final</em>
+      pixel
       (line-complete, <span style="border-bottom:1px dashed var(--c-line)">dotted</span>
-      marker){LINE_DELAY_NOTE}. 32 pulses per frame.</p>
+      marker){LINE_DELAY_NOTE}. {NUM_LINES_X2} pulses per frame.</p>
     </div>
     <div class="clock-card frame">
       <p class="kicker">Frame Clock</p>
-      <p class="rule-text">Trigger, twice per frame: once on line 1's 1st pixel (frame-start,
-      <b style="color:var(--c-frame)">bold</b> marker), once on line 16's 16th pixel
+      <p class="rule-text">Trigger, twice per frame: once on line 1's first pixel (frame-start,
+      <b style="color:var(--c-frame)">bold</b> marker), once on the final line's final pixel
       (frame-complete, <span style="border-bottom:1px dashed var(--c-frame)">dotted</span>
       marker){FRAME_DELAY_NOTE}. 2 pulses per frame.</p>
     </div>
@@ -684,7 +696,7 @@ a {{ color: var(--accent); }}
           <td>Trigger</td>
           <td>{PIXEL_PERIOD}</td>
           <td>{PIXEL_FREQ}</td>
-          <td>256</td>
+          <td>{TOTAL_PIXELS}</td>
           <td>{PIXEL_DELAY_US} µs</td>
         </tr>
         <tr>
@@ -692,7 +704,7 @@ a {{ color: var(--accent); }}
           <td>Trigger ×2</td>
           <td>{LINE_PERIOD}</td>
           <td>{LINE_FREQ}</td>
-          <td>32 (16 start + 16 complete)</td>
+          <td>{NUM_LINES_X2} ({NUM_LINES} start + {NUM_LINES} complete)</td>
           <td>{LINE_DELAY_US} µs</td>
         </tr>
         <tr>
@@ -740,9 +752,10 @@ a {{ color: var(--accent); }}
 <footer>
   <p><b style="color:var(--ink)">Assumption:</b> the {SAMPLE_RATE_STR}&nbsp;Hz sample rate is a
   placeholder value confirmed for this run — every period/frequency figure scales directly with
-  it. Line grouping used a 36-sample gap threshold (within-line gaps run ~30 samples,
-  line-to-line flyback ~42–44); both were auto-detected, not hand-tuned, and validated with zero
-  mismatches against the 16×16 target.{DELAY_FOOTNOTE}</p>
+  it. Line grouping used a {GAP_SPLIT}-sample gap threshold separating within-line pixel spacing
+  from line-to-line flyback; lines/pixels-per-line were auto-detected from the laser strobe, not
+  hand-tuned, yielding {NUM_LINES} lines of {PPL_LABEL} pixels for this
+  {GRID_LABEL} run.{DELAY_FOOTNOTE}</p>
 </footer>
 
 </div>
@@ -755,6 +768,7 @@ def main():
     ap.add_argument("--laser-csv", default="laser16x16.csv")
     ap.add_argument("--sample-rate", type=float, default=1e6)
     ap.add_argument("--pixels-per-line", type=int, default=16)
+    ap.add_argument("--gap-split", type=int, default=36)
     ap.add_argument("--pixel-delay-us", type=float, default=0.0)
     ap.add_argument("--line-delay-us", type=float, default=0.0)
     ap.add_argument("--frame-delay-us", type=float, default=0.0)
@@ -768,6 +782,7 @@ def main():
 
     pos, laser = gc.load_csv_pair(args.pos_csv, args.laser_csv)
     built = gc.build_clocks(pos, laser, pixels_per_line=args.pixels_per_line,
+                             gap_split=args.gap_split,
                              pixel_delay_samples=pixel_delay_samples,
                              line_delay_samples=line_delay_samples,
                              frame_delay_samples=frame_delay_samples)
@@ -798,6 +813,12 @@ def main():
             f"unaffected by its delay, only its phase relative to the other two clocks."
         )
 
+    num_lines = data["num_lines"]
+    grid_label = f'{num_lines} × {data["ppl_label"]}'
+    import os
+    pos_csv_name = os.path.basename(args.pos_csv)
+    laser_csv_name = os.path.basename(args.laser_csv)
+
     cmd_parts = ["python generate_clocks.py", f"--sample-rate {args.sample_rate:.0f}"]
     if args.pixel_delay_us:
         cmd_parts.append(f"--pixel-delay-us {args.pixel_delay_us}")
@@ -825,6 +846,10 @@ def main():
         FRAME_DELAY_US=f'{args.frame_delay_us:.1f}',
         CMD_LINE=" ".join(cmd_parts),
         DELAY_FOOTNOTE=delay_footnote,
+        GRID_LABEL=grid_label, POS_CSV=pos_csv_name, LASER_CSV=laser_csv_name,
+        NUM_LINES=num_lines, NUM_LINES_X2=num_lines * 2,
+        TOTAL_PIXELS=data["total_pixels"], PPL_LABEL=data["ppl_label"],
+        GAP_SPLIT=args.gap_split,
     )
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:

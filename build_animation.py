@@ -31,11 +31,13 @@ import base64
 import generate_clocks as gc
 
 
-def build_data(pos_csv, laser_csv, sample_rate_hz):
+def build_data(pos_csv, laser_csv, sample_rate_hz, pixels_per_line=16, gap_split=36):
     pos, laser = gc.load_csv_pair(pos_csv, laser_csv)
-    built = gc.build_clocks(pos, laser)  # physical/undelayed baseline -- delay lives in JS now
+    # physical/undelayed baseline -- delay lives in JS now
+    built = gc.build_clocks(pos, laser, pixels_per_line=pixels_per_line, gap_split=gap_split)
     n = built["n"]
     lines = built["lines"]
+    freqs = gc.compute_frequencies(built, sample_rate_hz, n)
 
     # ---- canvas trajectory geometry ----
     xs = [p[0] for p in pos]
@@ -56,9 +58,19 @@ def build_data(pos_csv, laser_csv, sample_rate_hz):
         traj_flat.append(round(nx(x), 2))
         traj_flat.append(round(ny(y), 2))
 
-    physical_pixel_idx = [int(i) for ln in lines for i in ln]        # 256, chronological
-    physical_lines = [[int(l[0]), int(l[-1])] for l in lines]        # 16 x [start,end]
+    physical_pixel_idx = [int(i) for ln in lines for i in ln]        # chronological, all pixels
+    # Parallel arrays: which line / which position-in-line each entry of
+    # physical_pixel_idx belongs to, read straight from build_clocks' own
+    # Line_Number/Pixel_In_Line metadata -- correct for any N-line,
+    # M-pixels-per-line grid (not just a hardcoded 16x16 square).
+    physical_pixel_line = [int(built["line_number"][i]) for i in physical_pixel_idx]
+    physical_pixel_pix = [int(built["pixel_in_line"][i]) for i in physical_pixel_idx]
+    physical_lines = [[int(l[0]), int(l[-1])] for l in lines]        # num_lines x [start,end]
     physical_frame = [int(built["frame_start"]), int(built["frame_end"])]
+    num_lines = len(lines)
+    total_pixels = len(physical_pixel_idx)
+    avg_ppl = total_pixels / num_lines
+    ppl_label = str(int(avg_ppl)) if avg_ppl == int(avg_ppl) else f"{avg_ppl:.1f}"
 
     TW = 1000
     x0t, x1t = 10, TW - 10
@@ -77,14 +89,26 @@ def build_data(pos_csv, laser_csv, sample_rate_hz):
         "canvasW": W, "canvasH": H,
         "traj": traj_flat,
         "physicalPixelIdx": physical_pixel_idx,
+        "physicalPixelLine": physical_pixel_line,
+        "physicalPixelPix": physical_pixel_pix,
         "physicalLines": physical_lines,
         "physicalFrame": physical_frame,
+        "numLines": num_lines,
+        "totalPixels": total_pixels,
         "timing": {
             "viewW": TW, "viewH": total_h,
             "x0": x0t, "x1": x1t,
             "lanes": lanes,
         },
         "sampleRateHz": sample_rate_hz,
+        "freqs": {
+            "pixelHz": freqs["pixel_freq_hz"], "pixelPeriodUs": freqs["pixel_period_s"] * 1e6,
+            "lineHz": freqs["line_freq_hz"], "linePeriodUs": freqs["line_period_s"] * 1e6,
+            "frameHz": freqs["frame_freq_hz"], "framePeriodMs": freqs["frame_period_s"] * 1e3,
+        },
+        "gridLabel": f"{num_lines} × {ppl_label}",
+        "numLinesLabel": str(num_lines),
+        "pplLabel": ppl_label,
     }
 
 
@@ -461,7 +485,7 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
 
 <div class="wrap">
   <header>
-    <p class="eyebrow">Live Simulation · 16 × 16 Raster Scan</p>
+    <p class="eyebrow">Live Simulation · {GRID_LABEL} Raster Scan</p>
     <h1>Watch the Laser Scan, Watch the Clocks Fire</h1>
   </header>
 
@@ -487,7 +511,7 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
     <p class="panel-title">Scan Origin &amp; Clock Delay</p>
     <div class="control-row">
       <label class="control-field">Start at pixel #
-        <input type="number" id="startPixel" min="1" max="256" value="1" />
+        <input type="number" id="startPixel" min="1" max="{TOTAL_PIXELS}" value="1" />
       </label>
       <button class="btn" id="goStartBtn">Go</button>
       <div class="divider"></div>
@@ -517,17 +541,17 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
         <div class="led-row">
           <div class="led-card pixel">
             <span class="led-dot" id="ledPixel"></span>
-            <span class="led-text"><span class="led-name">Pixel Clock</span><span class="led-hz">33,333.3 Hz · 30.00 µs period</span><span class="led-kind">Trigger — 1 per pixel</span></span>
+            <span class="led-text"><span class="led-name">Pixel Clock</span><span class="led-hz">{PIXEL_HZ_LABEL}</span><span class="led-kind">Trigger — 1 per pixel</span></span>
             <span class="led-state" id="statePixel">LOW</span>
           </div>
           <div class="led-card line">
             <span class="led-dot" id="ledLine"></span>
-            <span class="led-text"><span class="led-name">Line Clock</span><span class="led-hz">2,024.8 Hz · 493.87 µs period</span><span class="led-kind">Trigger ×2 — line start + complete</span></span>
+            <span class="led-text"><span class="led-name">Line Clock</span><span class="led-hz">{LINE_HZ_LABEL}</span><span class="led-kind">Trigger ×2 — line start + complete</span></span>
             <span class="led-state" id="stateLine">LOW</span>
           </div>
           <div class="led-card frame">
             <span class="led-dot" id="ledFrame"></span>
-            <span class="led-text"><span class="led-name">Frame Clock</span><span class="led-hz">119.775 Hz · 8.349 ms period</span><span class="led-kind">Trigger ×2 — frame start + complete</span></span>
+            <span class="led-text"><span class="led-name">Frame Clock</span><span class="led-hz">{FRAME_HZ_LABEL}</span><span class="led-kind">Trigger ×2 — frame start + complete</span></span>
             <span class="led-state" id="stateFrame">LOW</span>
           </div>
         </div>
@@ -538,8 +562,8 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
         <div class="readout-grid">
           <div class="readout"><div class="k">Sample</div><div class="v" id="roSample">0 <small>/ {N_MINUS_1}</small></div></div>
           <div class="readout"><div class="k">Sim. time</div><div class="v" id="roTime">0.000 <small>ms</small></div></div>
-          <div class="readout"><div class="k">Line</div><div class="v" id="roLine">— <small>/ 16</small></div></div>
-          <div class="readout"><div class="k">Pixel in line</div><div class="v" id="roPixel">— <small>/ 16</small></div></div>
+          <div class="readout"><div class="k">Line</div><div class="v" id="roLine">— <small>/ {NUM_LINES_LABEL}</small></div></div>
+          <div class="readout"><div class="k">Pixel in line</div><div class="v" id="roPixel">— <small>/ {PPL_LABEL}</small></div></div>
         </div>
       </div>
     </div>
@@ -569,8 +593,10 @@ const DATA = {DATA_JSON};
   "use strict";
   const N = DATA.n;
   const traj = DATA.traj; // flat [x0,y0,x1,y1,...]
-  const physicalPixelIdx = DATA.physicalPixelIdx; // 256 physical sample indices, chronological
-  const physicalLines = DATA.physicalLines;        // [[s,e],...] x16, physical -- structural "which line" + delay base
+  const physicalPixelIdx = DATA.physicalPixelIdx; // physical sample indices, chronological
+  const physicalPixelLine = DATA.physicalPixelLine; // parallel: which line each physicalPixelIdx entry belongs to
+  const physicalPixelPix = DATA.physicalPixelPix;   // parallel: position-in-line for each physicalPixelIdx entry
+  const physicalLines = DATA.physicalLines;        // [[s,e],...] x numLines, physical -- structural "which line" + delay base
   const physicalFrame = DATA.physicalFrame;        // [s,e], physical
   const lineSpans = physicalLines;                 // structural "current line" readout never shifts with delay
   const timing = DATA.timing;
@@ -674,7 +700,8 @@ const DATA = {DATA_JSON};
     let dropped = 0;
 
     const pxIdxAll = physicalPixelIdx.map((i) => i + pxD);
-    const pxIdx = pxIdxAll.filter((t) => t >= 0 && t < N);
+    const pxPairs = pxIdxAll.map((t, k) => ({{ t, k }})).filter((p) => p.t >= 0 && p.t < N);
+    const pxIdx = pxPairs.map((p) => p.t);
     dropped += pxIdxAll.length - pxIdx.length;
 
     const lineStarts = [], lineEnds = [];
@@ -690,8 +717,9 @@ const DATA = {DATA_JSON};
       if (de >= 0 && de < N) frameEnds.push(de); else dropped++;
     }}
 
-    pixels = pxIdx.map((idx, k) => ({{
-      i: idx, x: traj[idx * 2], y: traj[idx * 2 + 1], line: Math.floor(k / 16), pix: k % 16,
+    pixels = pxPairs.map((p) => ({{
+      i: p.t, x: traj[p.t * 2], y: traj[p.t * 2 + 1],
+      line: physicalPixelLine[p.k], pix: physicalPixelPix[p.k],
     }}));
     pixelByIndex = new Map();
     pixels.forEach((p, k) => pixelByIndex.set(p.i, k));
@@ -852,8 +880,8 @@ const DATA = {DATA_JSON};
   function updateReadouts(curLine, curPixInLine, pixelOn, lineOn, frameOn) {{
     roSample.innerHTML = Math.floor(currentIndex) + " <small>/ " + (N - 1) + "</small>";
     roTime.innerHTML = (currentIndex * dtMs).toFixed(3) + " <small>ms</small>";
-    roLine.innerHTML = (curLine >= 0 ? (curLine + 1) : "—") + " <small>/ 16</small>";
-    roPixel.innerHTML = (curPixInLine >= 0 ? (curPixInLine + 1) : "—") + " <small>/ 16</small>";
+    roLine.innerHTML = (curLine >= 0 ? (curLine + 1) : "—") + " <small>/ " + DATA.numLinesLabel + "</small>";
+    roPixel.innerHTML = (curPixInLine >= 0 ? (curPixInLine + 1) : "—") + " <small>/ " + DATA.pplLabel + "</small>";
 
     ledPixel.classList.toggle("on", pixelOn);
     ledLine.classList.toggle("on", lineOn);
@@ -1025,6 +1053,8 @@ def main():
     ap.add_argument("--pos-csv", default="Correct_16x16.csv")
     ap.add_argument("--laser-csv", default="laser16x16.csv")
     ap.add_argument("--sample-rate", type=float, default=1e6)
+    ap.add_argument("--pixels-per-line", type=int, default=16)
+    ap.add_argument("--gap-split", type=int, default=36)
     ap.add_argument("--pixel-delay-us", type=float, default=0.0,
                      help="Initial value pre-filled into the page's Pixel Delay input (editable live)")
     ap.add_argument("--line-delay-us", type=float, default=0.0,
@@ -1034,8 +1064,10 @@ def main():
     ap.add_argument("--out", default="scan_animation.html")
     args = ap.parse_args()
 
-    data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate)
+    data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate,
+                           pixels_per_line=args.pixels_per_line, gap_split=args.gap_split)
     data_json = json.dumps(data_obj, separators=(",", ":"))
+    freqs = data_obj["freqs"]
 
     html = HTML_TEMPLATE.format(
         ARCHIVO=b64("fonts/Archivo.woff2"), PLEX400=b64("fonts/PlexMono-400.woff2"),
@@ -1050,6 +1082,11 @@ def main():
         TIMING_LANES_SVG=timing_lanes_svg(data_obj),
         INIT_PIXEL_DELAY=args.pixel_delay_us, INIT_LINE_DELAY=args.line_delay_us,
         INIT_FRAME_DELAY=args.frame_delay_us,
+        GRID_LABEL=data_obj["gridLabel"], TOTAL_PIXELS=data_obj["totalPixels"],
+        NUM_LINES_LABEL=data_obj["numLinesLabel"], PPL_LABEL=data_obj["pplLabel"],
+        PIXEL_HZ_LABEL=f'{freqs["pixelHz"]:,.1f} Hz · {freqs["pixelPeriodUs"]:.2f} µs period',
+        LINE_HZ_LABEL=f'{freqs["lineHz"]:,.1f} Hz · {freqs["linePeriodUs"]:.2f} µs period',
+        FRAME_HZ_LABEL=f'{freqs["frameHz"]:,.3f} Hz · {freqs["framePeriodMs"]:.3f} ms period',
     )
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:

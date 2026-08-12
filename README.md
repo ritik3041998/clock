@@ -377,12 +377,14 @@ there is no level/held-high signal anywhere in this pipeline anymore.
 
 ## 6. Design choices & things to double-check
 
-- **`gap_split = 36` samples.** This threshold decides "same line" vs "next
-  line." It's derived from the data (within-line gaps cluster at 30,
-  line-to-line gaps at 42–44), not tuned by hand — but if you point this at
-  a different scan pattern with different dwell/flyback timing, check the
-  `[warn]` messages `generate_clocks.py` prints; it tells you if the
-  detected line/pixel counts don't match what you expected.
+- **`gap_split = 36` samples by default, now a `--gap-split` CLI flag.** This
+  threshold decides "same line" vs "next line." It's derived from the
+  16×16 data (within-line gaps cluster at 30, line-to-line gaps at 42–44) —
+  if you point this at a different scan pattern with different dwell/
+  flyback timing, check the `[warn]` messages `generate_clocks.py` prints;
+  they tell you if the detected line/pixel counts don't match
+  `--pixels-per-line`, and let you re-tune `--gap-split` if the default
+  misdetects your line boundaries.
 - **Sample rate is an assumption, not measured.** Nothing in the CSVs states
   the DAQ's actual sample rate — 1 MSa/s was confirmed for this run, but
   it's a single `--sample-rate` argument if that's wrong.
@@ -408,6 +410,19 @@ there is no level/held-high signal anywhere in this pipeline anymore.
   read straight back out of the `Pixel_Clock`/`Line_Clock`/`Frame_Clock`
   columns, not recomputed from the physical event times, so they stay
   correct under any delay.
+
+- **The pipeline is not limited to 16×16.** `build_clocks()`'s line
+  detection is purely gap-based (§ above) — it doesn't assume a fixed
+  line count or a fixed pixels-per-line, so `generate_clocks.py`,
+  `build_report.py` and `build_animation.py` all work unmodified on any
+  N-line, M-pixels-per-line raster scan. `--pixels-per-line` only feeds a
+  sanity-check warning; it never changes what gets detected. Verified
+  end-to-end against real `SCAN-PATTERNS/32x32_Pattern/` data (32 lines ×
+  38 laser-fire points/line, detected automatically with the default
+  `--gap-split 36`) — the CSV output, matplotlib plots, HTML report and
+  live animation all render correctly with dynamically computed grid
+  labels, pixel counts and per-line numbering instead of a hardcoded
+  "16"/"256".
 
 ---
 
