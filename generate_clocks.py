@@ -428,18 +428,19 @@ def _annotate_triggers(ax, starts, ends, dt, s0, s1, prefix, color, end_label=No
     (used for Line Clock's single "line clock end" pulse); left None, ends
     are drawn as a plain unlabeled dotted line (Frame Clock's behavior)."""
     t_lo, t_hi = s0 * dt * 1e3, s1 * dt * 1e3
+    label_y = 1.06  # just above the 0-1 axis range used for Line/Frame Clock lanes
     for k, s in enumerate(starts):
         t = s * dt * 1e3
         if t_lo <= t <= t_hi:
             ax.axvline(t, color=color, linewidth=2.0, linestyle="-", alpha=0.9, zorder=4)
-            ax.text(t, 1.28, f"{prefix}{k+1}", ha="center", va="bottom",
+            ax.text(t, label_y, f"{prefix}{k+1}", ha="center", va="bottom",
                     fontsize=7.5, color=color, clip_on=False)
     for e in ends:
         t = e * dt * 1e3
         if t_lo <= t <= t_hi:
             ax.axvline(t, color=color, linewidth=1.3, linestyle=(0, (2, 2)), alpha=0.8, zorder=4)
             if end_label:
-                ax.text(t, 1.28, end_label, ha="center", va="bottom",
+                ax.text(t, label_y, end_label, ha="center", va="bottom",
                         fontsize=7.5, color=color, clip_on=False)
 
 
@@ -459,7 +460,10 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
     ]
     for ax, (label, sig, color) in zip(axes, signals):
         ax.step(t, sig, where="post", color=color, linewidth=1.5)
-        ax.set_ylim(-0.2, 1.2)
+        # Line/Frame Clock lanes stay strictly within the 0-1 digital range;
+        # Pixel Clock keeps a little headroom since it has no marker text
+        # floating above it that needs the extra room.
+        ax.set_ylim(0, 1) if label in ("Line Clock", "Frame Clock") else ax.set_ylim(-0.2, 1.2)
         ax.set_ylabel(label)
         ax.grid(alpha=0.3)
 
