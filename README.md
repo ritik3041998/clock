@@ -24,7 +24,8 @@ What's *not* logged directly is the **digital timing signals** a downstream
 system (camera, detector, FPGA, etc.) would need to know:
 
 - **Pixel Clock** — "a pixel just happened, capture it" (a trigger)
-- **Line Clock** — "a line just completed" (one trigger)
+- **Line Clock** — "a line just started" (one trigger per line), plus one
+  extra "line scanning has ended" trigger after the last line
 - **Frame Clock** — "a frame just started" / "a frame just completed" (two triggers)
 
 This pipeline reverse-engineers those three clocks purely from the logged
@@ -137,17 +138,18 @@ different number of lines than expected) instead of silently assuming the
 | Clock | Rule |
 |---|---|
 | `Pixel_Clock` | **Trigger.** `1` for exactly the 1 sample where a laser event happened, else `0` — a 1-sample pulse per pixel counted. |
-| `Line_Clock` | **One trigger per line.** `1` for exactly the 1 sample where a line's **16th** (last) pixel fires — the line-complete pulse, coincides with that pixel's `Pixel_Clock` pulse. `0` at every other sample, including the whole line leading up to it — it does **not** stay high across the line, and there is no separate line-start pulse. |
+| `Line_Clock` | **One trigger per line-start, plus one extra "end" trigger.** `1` for exactly the 1 sample where each line's **1st** pixel fires (line-start pulse — L1, L2, ..., L16), and `1` one more time, after the last line's pulse, at the sample where the **very last pixel of the whole frame** fires (the "line clock end" pulse — coincides with that pixel's `Pixel_Clock` pulse, Frame Clock's complete pulse, and the frame's last sample). `0` everywhere else — it does **not** stay high across the line. |
 | `Frame_Clock` | **Two triggers per frame.** `1` for exactly the 1 sample where the frame's **1st** pixel fires (frame-start pulse — line 1's 1st pixel), and `1` again at the 1 sample where its **last** pixel fires (frame-complete pulse — line 16's 16th pixel). `0` everywhere else — it does **not** stay high across the frame. |
 
 All three clocks are deliberately the *same kind* of signal: 1-sample
 triggers, never held high. They differ only in how often they fire — Pixel
-once per pixel (256/frame), Line once per line at 1×16 the pixel rate
-(16/frame, on completion), Frame twice per frame at 1×256 the pixel rate
-(2/frame). A Line Clock pulse always lands exactly on that line's 16th
-Pixel Clock pulse; the Frame Clock "complete" pulse always lands on the
-16th line's Line Clock pulse (both fire on the same, very last sample of
-the frame).
+once per pixel (256/frame), Line once per line-start at 1×16 the pixel
+rate plus one final end-of-scan pulse (17/frame), Frame twice per frame at
+1×256 the pixel rate (2/frame). A Line Clock line-start pulse always lands
+exactly on that line's 1st Pixel Clock pulse; Line Clock's final "end"
+pulse, the Frame Clock "complete" pulse, and the very last Pixel Clock
+pulse all land on the exact same sample — the very last sample of the
+frame.
 
 It also records, per sample, which `Line_Number` (0–15) and `Pixel_In_Line`
 (0–15) it belongs to, or `-1` if it's outside any pixel/line.
@@ -159,9 +161,10 @@ not its own clock rate), so it's passed in as `--sample-rate` (Hz). Given
 that:
 - **Pixel period** = average gap between consecutive pixel events within a
   line, in seconds → pixel frequency = `1 / period`.
-- **Line period** = average gap between consecutive Line Clock triggers
-  (the 16th pixel of one line to the 16th pixel of the next — dwell time +
-  turnaround) → line frequency.
+- **Line period** = average gap between consecutive Line Clock line-start
+  triggers (the 1st pixel of one line to the 1st pixel of the next — dwell
+  time + turnaround) → line frequency. (The one extra "end" pulse isn't
+  part of this average — it's a one-off, not a repeating rate.)
 - **Frame period** = total number of samples in the file × sample period —
   i.e. the file is treated as exactly one full frame (start delay through
   end tail) that then repeats.
@@ -219,8 +222,8 @@ It draws:
    `scan_pattern.bmp` directly from the reconstructed data.
 2. **`timing_full_frame.png`** — Pixel/Line/Frame clocks stacked as digital
    step traces across the whole 8.349 ms frame, with numbered bold markers
-   (one per line, on completion) on the Line lane and bold-start/
-   dotted-complete markers on the Frame lane (see §5).
+   (one per line-start) plus a dotted "END" marker on the Line lane, and
+   bold-start/dotted-complete markers on the Frame lane (see §5).
 3. **`timing_zoom.png`** — the same three traces, zoomed to just the first
    `--zoom-lines` lines (default 2) so individual pixel pulses are legible.
 
@@ -314,7 +317,7 @@ faster (down to ~4 seconds/frame at max) but less readable playback.
 | `X_Voltage`, `Y_Voltage` | Galvo drive voltage at this sample (from `Correct_16x16.csv`). |
 | `Laser_Raw` | The raw laser strobe value at this sample (`0.0` or `5.0`). |
 | `Pixel_Clock` | `1` on the exact sample a pixel fires, else `0` (trigger). |
-| `Line_Clock` | `1` on the exact sample a line's 16th (last) pixel fires (coincides with that pixel's `Pixel_Clock=1`), else `0` (one trigger per line, on completion — **not** held high across the line, no separate line-start pulse). |
+| `Line_Clock` | `1` on the exact sample each line's 1st pixel fires (L1, L2, ... — line-start), and `1` one more time on the frame's very last pixel (the "line clock end" pulse, coincides with `Frame_Clock`'s complete pulse), else `0` (**not** held high across the line). |
 | `Frame_Clock` | `1` on the exact sample the frame's 1st pixel fires **and** again on the frame's last pixel, else `0` (two triggers per frame — **not** held high across the frame). |
 | `Line_Number` | Which line (`0`–`15`) this sample belongs to, or `-1` if between lines / outside the frame. |
 | `Pixel_In_Line` | Which pixel within that line (`0`–`15`) this sample *is*, or `-1` if it isn't a pixel sample. |
@@ -325,7 +328,7 @@ faster (down to ~4 seconds/frame at max) but less readable playback.
 |---|---|
 | `Period_s` / `Period_ms` | Average time between rising edges. For Line/Frame Clock this is the per-*line*/per-*frame* period (start to next start), not the gap between the two pulses within one line/frame. |
 | `Frequency_Hz` | `1 / Period_s`. |
-| `Events_Per_Frame` | 256 for Pixel, **16** for Line (1 trigger per line, on completion), **2** for Frame (start + complete). |
+| `Events_Per_Frame` | 256 for Pixel, **17** for Line (16 line-start triggers + 1 end trigger), **2** for Frame (start + complete). |
 | `Start_Delay_us` | The `--pixel-delay-us` / `--line-delay-us` / `--frame-delay-us` that clock was generated with (`0.000` by default). |
 
 At the assumed 1 MSa/s sample rate:
@@ -333,7 +336,7 @@ At the assumed 1 MSa/s sample rate:
 | Clock | Period | Frequency | Events/frame |
 |---|---|---|---|
 | Pixel | 30.00 µs | 33,333.3 Hz | 256 |
-| Line | 493.87 µs | 2,024.8 Hz | 16 (one per line, on completion) |
+| Line | 493.87 µs | 2,024.8 Hz | 17 (16 line-start + 1 end) |
 | Frame | 8.349 ms | 119.775 Hz | 2 (start + complete) |
 
 **These numbers move directly with `--sample-rate`.** If your DAQ actually
@@ -348,21 +351,23 @@ frequency halves — the *sample-domain* structure (30-sample pixel spacing,
 
 ```
 Frame Clock   ▏                                                              ▏
-Line Clock                  ▏                   ▏                   ▏  ...   ▏
+Line Clock    ▏                    ▏                    ▏  ...               ▏
 Pixel Clock   ▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏    ▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏    ▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏▏
               └─────line 1─────┘ gap └─────line 2─────┘ gap  ...  (×16 lines)
               └──────────────────── 1 frame ────────────────────┘
 ```
 
 - **Pixel Clock** fires once per pixel — 16 pulses per line, 256 per frame.
-- **Line Clock** fires *once* per line: on its 16th (last) pixel
-  (line-complete pulse, landing exactly on that pixel's Pixel Clock pulse —
-  the last `▏` in each line's group above). No separate line-start pulse.
-  16 pulses per frame.
+- **Line Clock** fires *once at the start* of every line: on its 1st pixel
+  (line-start pulse — L1, L2, ..., L16, landing exactly on that pixel's
+  Pixel Clock pulse, the first `▏` in each line's group above), **plus one
+  extra pulse** after the last line finishes, on the very last pixel of the
+  frame (the "line clock end" pulse — the very last `▏` above, coincident
+  with Frame Clock's complete pulse). 17 pulses per frame total.
 - **Frame Clock** fires *twice* per frame: once at line 1's 1st pixel
-  (frame-start — the very first `▏` above) and once at line 16's 16th pixel
-  (frame-complete — the very last `▏`, coincident with Line Clock's final
-  per-line pulse). 2 pulses per frame.
+  (frame-start — the very first `▏` above, coincident with Line Clock's L1)
+  and once at line 16's 16th pixel (frame-complete — the very last `▏`,
+  coincident with Line Clock's final "end" pulse). 2 pulses per frame.
 
 All three are trigger trains at three different rates (1×, 1×16, 1×256 the
 pixel rate) rather than one being a continuous span gating the others —
@@ -397,12 +402,13 @@ there is no level/held-high signal anywhere in this pipeline anymore.
   50%-duty-cycle square waves or held-high gates. That matches "strobe"
   semantics (fire once when something happens) rather than a free-running
   oscillator. Line Clock and Frame Clock both used to be levels held high
-  across their duration; Line Clock is now a single completion pulse
-  (`line_clock[end]=1` in `build_clocks()`, no separate start pulse), and
-  Frame Clock is still a start/complete pair (`frame_clock[frame_start]=1`
-  / `frame_clock[frame_end]=1`). If you need either as a held-high signal
-  instead, that's a one-line change back to `line_clock[start:end+1] = 1`
-  (or the frame equivalent).
+  across their duration; Line Clock now fires `line_clock[start]=1` for
+  every line (line-start pulses) plus one extra
+  `line_clock[last_line_end]=1` after the final line (the "line clock end"
+  pulse), and Frame Clock is still a start/complete pair
+  (`frame_clock[frame_start]=1` / `frame_clock[frame_end]=1`). If you need
+  either as a held-high signal instead, that's a one-line change back to
+  `line_clock[start:end+1] = 1` (or the frame equivalent).
 - **Per-clock start delay is a phase shift, not a rate change.** `--pixel-
   delay-us` / `--line-delay-us` / `--frame-delay-us` (see §3.1) move each
   clock's pulses later in time independently to model real hardware

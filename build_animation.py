@@ -11,9 +11,11 @@ control can jump anywhere in the (possibly delayed) pixel sequence instantly.
 
 Clock semantics match generate_clocks.py:
     Pixel Clock -> trigger, 1 sample wide, once per pixel counted (256/frame)
-    Line Clock  -> ONE trigger per line: fires once, on line-complete (the
-                   16th/last pixel) (16/frame). NOT held high, no separate
-                   line-start pulse.
+    Line Clock  -> ONE trigger at the START of every line (its 1st pixel) --
+                   L1, L2, ... -- PLUS one extra "line clock end" pulse
+                   after the last line finishes (its last pixel, same
+                   sample as Frame Clock's complete pulse) (17/frame). NOT
+                   held high.
     Frame Clock -> two triggers per frame: frame-start (line 1's 1st pixel)
                    and frame-complete (line 16's 16th pixel) (2/frame). NOT
                    held high.
@@ -547,7 +549,7 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
           </div>
           <div class="led-card line">
             <span class="led-dot" id="ledLine"></span>
-            <span class="led-text"><span class="led-name">Line Clock</span><span class="led-hz">{LINE_HZ_LABEL}</span><span class="led-kind">Trigger — once per line, on completion</span></span>
+            <span class="led-text"><span class="led-name">Line Clock</span><span class="led-hz">{LINE_HZ_LABEL}</span><span class="led-kind">Trigger — line start, +1 end pulse</span></span>
             <span class="led-state" id="stateLine">LOW</span>
           </div>
           <div class="led-card frame">
@@ -571,10 +573,10 @@ input[type="number"]:focus-visible {{ outline: 2px solid var(--accent); outline-
   </div>
 
   <div class="panel scope-wrap">
-    <p class="panel-title">Timing Scope — pixel ×1/px, line ×1/line (on completion), frame ×2 (start + complete)</p>
+    <p class="panel-title">Timing Scope — pixel ×1/px, line ×1/line (on start) + 1 end, frame ×2 (start + complete)</p>
     <div class="legend">
       <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock (trigger ×2)</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock (trigger, ×1/line)</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock (trigger, ×1/line + end)</span>
       <span class="legend-item"><span class="swatch" style="background:var(--c-pixel)"></span>Pixel Clock (trigger)</span>
     </div>
     <svg id="timingSvg" class="timing-svg" viewBox="0 -22 {TIMING_VB_W} {TIMING_VB_H_MARGIN}" role="img" aria-label="Live timing diagram of pixel, line and frame clocks">
@@ -705,12 +707,18 @@ const DATA = {DATA_JSON};
     const pxIdx = pxPairs.map((p) => p.t);
     dropped += pxIdxAll.length - pxIdx.length;
 
-    // Line Clock is a single discrete pulse per line -- fired once, on line
-    // completion (the line's last pixel). No separate line-start pulse.
-    const lineHits = [];
+    // Line Clock fires at the START of every line (its 1st pixel) -- L1,
+    // L2, ... -- plus one extra "line clock end" pulse after the last line
+    // finishes (its last pixel).
+    const lineStarts = [];
     for (const span of physicalLines) {{
-      const de = span[1] + lnD;
-      if (de >= 0 && de < N) lineHits.push(de); else dropped++;
+      const ds = span[0] + lnD;
+      if (ds >= 0 && ds < N) lineStarts.push(ds); else dropped++;
+    }}
+    const lineEnd = [];
+    {{
+      const de = physicalLines[physicalLines.length - 1][1] + lnD;
+      if (de >= 0 && de < N) lineEnd.push(de); else dropped++;
     }}
     const frameStarts = [], frameEnds = [];
     {{
@@ -725,12 +733,12 @@ const DATA = {DATA_JSON};
     }}));
     pixelByIndex = new Map();
     pixels.forEach((p, k) => pixelByIndex.set(p.i, k));
-    lineTriggerSet = new Set(lineHits);
+    lineTriggerSet = new Set(lineStarts.concat(lineEnd));
     frameTriggerSet = new Set(frameStarts.concat(frameEnds));
 
     const lanes = timing.lanes;
     const pxIntervals = pxIdx.map((i) => [i * dtMs, i * dtMs + PULSE_W]);
-    const lnIntervals = lineHits.slice().sort((a, b) => a - b).map((i) => [i * dtMs, i * dtMs + PULSE_W]);
+    const lnIntervals = lineStarts.concat(lineEnd).sort((a, b) => a - b).map((i) => [i * dtMs, i * dtMs + PULSE_W]);
     const frIntervals = frameStarts.concat(frameEnds).sort((a, b) => a - b).map((i) => [i * dtMs, i * dtMs + PULSE_W]);
 
     const pathPixel = buildStepPath(pxIntervals, lanes.pixel.yHi, lanes.pixel.yLo, timing.x0, timing.x1);
@@ -745,12 +753,17 @@ const DATA = {DATA_JSON};
 
     function Xmap(t) {{ return timing.x0 + (t / totalMs) * (timing.x1 - timing.x0); }}
     let markerSvg = "";
-    // Line Clock: one bold, numbered marker per line (no dotted "complete"
-    // counterpart anymore -- the single pulse itself IS the completion).
-    lineHits.slice().sort((a, b) => a - b).forEach((s, k) => {{
+    // Line Clock: one bold, numbered marker per line-start (L1, L2, ...)
+    // plus one dotted "END" marker for the extra pulse after the last line.
+    lineStarts.slice().sort((a, b) => a - b).forEach((s, k) => {{
       const x = Xmap(s * dtMs);
       markerSvg += '<line x1="' + x.toFixed(2) + '" y1="' + lanes.line.yLo + '" x2="' + x.toFixed(2) + '" y2="' + (lanes.line.yHi - 6).toFixed(1) + '" class="marker-start marker-line"/>';
       markerSvg += '<text x="' + x.toFixed(2) + '" y="' + (lanes.line.yHi - 9).toFixed(1) + '" text-anchor="middle" class="marker-label marker-label-line">L' + (k + 1) + '</text>';
+    }});
+    lineEnd.forEach((e) => {{
+      const x = Xmap(e * dtMs);
+      markerSvg += '<line x1="' + x.toFixed(2) + '" y1="' + lanes.line.yLo + '" x2="' + x.toFixed(2) + '" y2="' + lanes.line.yHi + '" class="marker-end marker-line"/>';
+      markerSvg += '<text x="' + x.toFixed(2) + '" y="' + (lanes.line.yHi - 9).toFixed(1) + '" text-anchor="middle" class="marker-label marker-label-line">END</text>';
     }});
     frameStarts.forEach((s, k) => {{
       const x = Xmap(s * dtMs);

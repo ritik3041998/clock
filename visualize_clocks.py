@@ -18,12 +18,12 @@ Figures produced:
     2. timing_full_frame.png - Pixel/Line/Frame clocks stacked, whole frame
     3. timing_zoom.png       - same, zoomed to the first N lines (default 2)
 
-Line/Frame Clock convention in the timing plots: Line Clock fires a single
-bold, numbered pulse per line (L1, L2, ...) on line completion -- no
-start/complete pair. Frame Clock still fires a start/complete pair: bold
-for "start" (F1), dotted for the matching "complete" -- both derived
-straight from the Line_Clock/Frame_Clock columns already in
-clock_output.csv.
+Line/Frame Clock convention in the timing plots: Line Clock fires a bold,
+numbered pulse at the START of every line (L1, L2, ...), plus one dotted
+"END" pulse after the last line finishes. Frame Clock still fires a
+start/complete pair: bold for "start" (F1), dotted for the matching
+"complete" -- both derived straight from the Line_Clock/Frame_Clock
+columns already in clock_output.csv.
 
 Usage:
     python visualize_clocks.py
@@ -83,25 +83,30 @@ def plot_scan_trajectory(df, out_path):
 
 
 def _trigger_edges(df):
-    """Line_Clock is a single discrete pulse per line (fired on line
-    completion, no separate start pulse), so its hits need no pairing --
-    just number them in order: L1, L2, ... Frame_Clock is still a
-    start/complete pair, paired up chronologically: 1st = start, 2nd =
-    complete. Reads the ACTUAL Line_Clock/Frame_Clock columns directly (not
-    the Pixel_Clock/Line_Number metadata), so markers stay correct even if
-    generate_clocks.py was run with a --line-delay-us/--frame-delay-us that
-    shifts the trigger away from the physical pixel event it marks."""
+    """Line_Clock fires one pulse at the START of every line (L1, L2, ...),
+    plus one extra "line clock end" pulse after the very last line finishes
+    -- that final hit is always the chronologically last one, so it's split
+    off as the "end" marker and the rest are numbered line-start markers.
+    Frame_Clock is still a start/complete pair, paired up chronologically:
+    1st = start, 2nd = complete. Reads the ACTUAL Line_Clock/Frame_Clock
+    columns directly (not the Pixel_Clock/Line_Number metadata), so markers
+    stay correct even if generate_clocks.py was run with a
+    --line-delay-us/--frame-delay-us that shifts the trigger away from the
+    physical pixel event it marks."""
     line_hits = sorted(df.loc[df["Line_Clock"] == 1, "Sample_Index"].tolist())
+    line_starts, line_end = line_hits[:-1], line_hits[-1:]
 
     frame_hits = sorted(df.loc[df["Frame_Clock"] == 1, "Sample_Index"].tolist())
     frame_start = frame_hits[0] if len(frame_hits) >= 1 else None
     frame_end = frame_hits[1] if len(frame_hits) >= 2 else None
-    return line_hits, frame_start, frame_end
+    return line_starts, line_end, frame_start, frame_end
 
 
-def _annotate_triggers(ax, starts, ends, dt_ms, s0, s1, prefix, color):
+def _annotate_triggers(ax, starts, ends, dt_ms, s0, s1, prefix, color, end_label=None):
     """Bold solid line + number at each 'start' trigger, dotted line at each
-    'complete/off' trigger, within the plotted sample window."""
+    'complete/off' trigger, within the plotted sample window. If end_label
+    is given, each 'end' marker also gets that text label (used for Line
+    Clock's single "line clock end" pulse)."""
     t_lo, t_hi = s0 * dt_ms, s1 * dt_ms
     for k, s in enumerate(starts):
         t = s * dt_ms
@@ -113,6 +118,9 @@ def _annotate_triggers(ax, starts, ends, dt_ms, s0, s1, prefix, color):
         t = e * dt_ms
         if t_lo <= t <= t_hi:
             ax.axvline(t, color=color, linewidth=1.3, linestyle=(0, (2, 2)), alpha=0.8, zorder=4)
+            if end_label:
+                ax.text(t, 1.28, end_label, ha="center", va="bottom",
+                        fontsize=7.5, color=color, clip_on=False)
 
 
 def plot_timing(df, out_path, sample_range=None, title_suffix=""):
@@ -142,10 +150,10 @@ def plot_timing(df, out_path, sample_range=None, title_suffix=""):
             spine.set_color(COLOR_GRID)
 
     # Numbered markers, same convention as generate_clocks.py: L1, L2, ...
-    # bold (one per line, on completion -- no dotted counterpart anymore),
-    # F1 start(bold)/complete(dotted) for the frame.
-    line_hits, frame_start, frame_end = _trigger_edges(df)
-    _annotate_triggers(axes[1], line_hits, [], dt_ms, s0, s1, "L", COLOR_LINE)
+    # bold at each line-start, one dotted "END" marker for the single
+    # line-clock-end pulse, F1 start(bold)/complete(dotted) for the frame.
+    line_starts, line_end, frame_start, frame_end = _trigger_edges(df)
+    _annotate_triggers(axes[1], line_starts, line_end, dt_ms, s0, s1, "L", COLOR_LINE, end_label="END")
     frame_starts = [frame_start] if frame_start is not None else []
     frame_ends = [frame_end] if frame_end is not None else []
     _annotate_triggers(axes[2], frame_starts, frame_ends, dt_ms, s0, s1, "F", COLOR_FRAME)

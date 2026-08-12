@@ -98,9 +98,12 @@ def compute_report_data(pos, built, sample_rate_hz):
         return [(i * dt * 1000, i * dt * 1000 + pulse_w) for i in idx_list]
 
     pixel_intervals = to_intervals(pixel_trigger_idx)
-    # Line Clock is a single discrete pulse per line (line completion, no
-    # start pulse) -- no pairing needed, just number the hits in order.
+    # Line Clock fires one pulse at the START of every line (L1, L2, ...),
+    # plus one extra "line clock end" pulse after the last line finishes --
+    # that final hit (chronologically last) is split off as the "end"
+    # marker; the rest are numbered line-start markers.
     line_hits_i = sorted(int(i) for i in np.where(built["line_clock"] == 1)[0])
+    line_starts_i, line_end_i = line_hits_i[:-1], line_hits_i[-1:]
     frame_starts_i, frame_ends_i = gc._trigger_edges_from_array(built["frame_clock"])
     line_intervals = to_intervals(line_hits_i)
     frame_intervals = to_intervals(list(frame_starts_i) + list(frame_ends_i))
@@ -131,11 +134,15 @@ def compute_report_data(pos, built, sample_rate_hz):
             return t_lo <= t <= t_hi
 
         line_starts_x = []
-        for k, s in enumerate(line_hits_i):
+        for k, s in enumerate(line_starts_i):
             t = s * dt * 1000
             if in_window(t):
                 line_starts_x.append((Xmap(t_lo, t_hi, t), f"L{k+1}"))
-        line_ends_x = []  # Line Clock has no separate "complete" pulse anymore
+        line_ends_x = []
+        for e in line_end_i:
+            t = e * dt * 1000
+            if in_window(t):
+                line_ends_x.append((Xmap(t_lo, t_hi, t), "END"))
         frame_starts_x = []
         for k, s in enumerate(frame_starts_i):
             t = s * dt * 1000
@@ -145,7 +152,7 @@ def compute_report_data(pos, built, sample_rate_hz):
         for e in frame_ends_i:
             t = e * dt * 1000
             if in_window(t):
-                frame_ends_x.append(Xmap(t_lo, t_hi, t))
+                frame_ends_x.append((Xmap(t_lo, t_hi, t), None))
 
         markers = {
             "line": {"starts": line_starts_x, "ends": line_ends_x},
@@ -199,8 +206,10 @@ def timing_svg(d, title_id, lane_labels):
         for x, text in m["starts"]:
             parts.append(f'<line x1="{x:.2f}" y1="{y_lo}" x2="{x:.2f}" y2="{y_hi-6:.1f}" class="marker-start marker-{name}"/>')
             parts.append(f'<text x="{x:.2f}" y="{y_hi-9:.1f}" text-anchor="middle" class="marker-label marker-label-{name}">{text}</text>')
-        for x in m["ends"]:
+        for x, text in m["ends"]:
             parts.append(f'<line x1="{x:.2f}" y1="{y_lo}" x2="{x:.2f}" y2="{y_hi:.1f}" class="marker-end marker-{name}"/>')
+            if text:
+                parts.append(f'<text x="{x:.2f}" y="{y_hi-9:.1f}" text-anchor="middle" class="marker-label marker-label-{name}">{text}</text>')
     parts.append('</g>')
     for name in ["frame", "line", "pixel"]:
         y0, y_hi, y_lo = lanes[name]
@@ -640,10 +649,11 @@ a {{ color: var(--accent); }}
     </div>
     <div class="clock-card line">
       <p class="kicker">Line Clock</p>
-      <p class="rule-text">Trigger, once per line: fires a single pulse the moment the
-      line completes, on its <em>final</em> pixel
-      (<b style="color:var(--c-line)">bold</b>, numbered marker){LINE_DELAY_NOTE}.
-      {NUM_LINES} pulses per frame — no separate line-start pulse.</p>
+      <p class="rule-text">Trigger, once at the <em>start</em> of every line, on its 1st
+      pixel (<b style="color:var(--c-line)">bold</b>, numbered marker: L1, L2,
+      …){LINE_DELAY_NOTE}, plus one extra pulse after the last line finishes
+      (<span style="border-bottom:1px dashed var(--c-line)">dotted</span> "END" marker).
+      {NUM_LINES} line-start pulses + 1 end pulse per frame.</p>
     </div>
     <div class="clock-card frame">
       <p class="kicker">Frame Clock</p>
@@ -658,9 +668,9 @@ a {{ color: var(--accent); }}
 <section id="timing">
   <div class="section-head"><span class="section-num">03</span><h2>Timing diagram</h2></div>
   <p class="section-desc">Bold numbered markers (L1, L2, …) mark each Line Clock pulse — one
-  per line, fired on completion. Frame Clock still gets a bold "start" marker (F1) and a
-  dotted "complete" marker for its start/complete pair. Hover any pulse for its sample index
-  and timestamp.</p>
+  per line, fired at its start — plus a dotted "END" marker for the extra pulse after the
+  last line finishes. Frame Clock gets a bold "start" marker (F1) and a dotted "complete"
+  marker for its start/complete pair. Hover any pulse for its sample index and timestamp.</p>
   <div class="legend">
     <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock</span>
     <span class="legend-item"><span class="swatch" style="background:var(--c-line)"></span>Line Clock</span>
@@ -702,7 +712,7 @@ a {{ color: var(--accent); }}
           <td>Trigger</td>
           <td>{LINE_PERIOD}</td>
           <td>{LINE_FREQ}</td>
-          <td>{NUM_LINES} (one per line, on completion)</td>
+          <td>{NUM_LINES_PLUS_1} ({NUM_LINES} line-start + 1 end)</td>
           <td>{LINE_DELAY_US} µs</td>
         </tr>
         <tr>
@@ -856,7 +866,7 @@ def main():
         CMD_LINE=" ".join(cmd_parts),
         DELAY_FOOTNOTE=delay_footnote,
         GRID_LABEL=grid_label, POS_CSV=pos_csv_name, LASER_CSV=laser_csv_name,
-        NUM_LINES=num_lines,
+        NUM_LINES=num_lines, NUM_LINES_PLUS_1=num_lines + 1,
         TOTAL_PIXELS=data["total_pixels"], PPL_LABEL=data["ppl_label"],
         GAP_SPLIT=built["gap_split"],
     )
