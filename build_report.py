@@ -98,9 +98,11 @@ def compute_report_data(pos, built, sample_rate_hz):
         return [(i * dt * 1000, i * dt * 1000 + pulse_w) for i in idx_list]
 
     pixel_intervals = to_intervals(pixel_trigger_idx)
-    line_starts_i, line_ends_i = gc._trigger_edges_from_array(built["line_clock"])
+    # Line Clock is a single discrete pulse per line (line completion, no
+    # start pulse) -- no pairing needed, just number the hits in order.
+    line_hits_i = sorted(int(i) for i in np.where(built["line_clock"] == 1)[0])
     frame_starts_i, frame_ends_i = gc._trigger_edges_from_array(built["frame_clock"])
-    line_intervals = to_intervals(list(line_starts_i) + list(line_ends_i))
+    line_intervals = to_intervals(line_hits_i)
     frame_intervals = to_intervals(list(frame_starts_i) + list(frame_ends_i))
 
     TW = 1000
@@ -129,15 +131,11 @@ def compute_report_data(pos, built, sample_rate_hz):
             return t_lo <= t <= t_hi
 
         line_starts_x = []
-        for k, s in enumerate(line_starts_i):
+        for k, s in enumerate(line_hits_i):
             t = s * dt * 1000
             if in_window(t):
                 line_starts_x.append((Xmap(t_lo, t_hi, t), f"L{k+1}"))
-        line_ends_x = []
-        for e in line_ends_i:
-            t = e * dt * 1000
-            if in_window(t):
-                line_ends_x.append(Xmap(t_lo, t_hi, t))
+        line_ends_x = []  # Line Clock has no separate "complete" pulse anymore
         frame_starts_x = []
         for k, s in enumerate(frame_starts_i):
             t = s * dt * 1000
@@ -642,11 +640,10 @@ a {{ color: var(--accent); }}
     </div>
     <div class="clock-card line">
       <p class="kicker">Line Clock</p>
-      <p class="rule-text">Trigger, twice per line: once on the line's <em>first</em> pixel
-      (line-start, <b style="color:var(--c-line)">bold</b> marker), once on its <em>final</em>
-      pixel
-      (line-complete, <span style="border-bottom:1px dashed var(--c-line)">dotted</span>
-      marker){LINE_DELAY_NOTE}. {NUM_LINES_X2} pulses per frame.</p>
+      <p class="rule-text">Trigger, once per line: fires a single pulse the moment the
+      line completes, on its <em>final</em> pixel
+      (<b style="color:var(--c-line)">bold</b>, numbered marker){LINE_DELAY_NOTE}.
+      {NUM_LINES} pulses per frame — no separate line-start pulse.</p>
     </div>
     <div class="clock-card frame">
       <p class="kicker">Frame Clock</p>
@@ -660,8 +657,9 @@ a {{ color: var(--accent); }}
 
 <section id="timing">
   <div class="section-head"><span class="section-num">03</span><h2>Timing diagram</h2></div>
-  <p class="section-desc">Bold numbered markers (L1, L2, … / F1) mark each "start" trigger;
-  dotted markers mark the matching "complete" trigger. Hover any pulse for its sample index
+  <p class="section-desc">Bold numbered markers (L1, L2, …) mark each Line Clock pulse — one
+  per line, fired on completion. Frame Clock still gets a bold "start" marker (F1) and a
+  dotted "complete" marker for its start/complete pair. Hover any pulse for its sample index
   and timestamp.</p>
   <div class="legend">
     <span class="legend-item"><span class="swatch" style="background:var(--c-frame)"></span>Frame Clock</span>
@@ -701,10 +699,10 @@ a {{ color: var(--accent); }}
         </tr>
         <tr>
           <td class="label"><span class="dot-legend" style="background:var(--c-line)"></span>Line</td>
-          <td>Trigger ×2</td>
+          <td>Trigger</td>
           <td>{LINE_PERIOD}</td>
           <td>{LINE_FREQ}</td>
-          <td>{NUM_LINES_X2} ({NUM_LINES} start + {NUM_LINES} complete)</td>
+          <td>{NUM_LINES} (one per line, on completion)</td>
           <td>{LINE_DELAY_US} µs</td>
         </tr>
         <tr>
@@ -858,7 +856,7 @@ def main():
         CMD_LINE=" ".join(cmd_parts),
         DELAY_FOOTNOTE=delay_footnote,
         GRID_LABEL=grid_label, POS_CSV=pos_csv_name, LASER_CSV=laser_csv_name,
-        NUM_LINES=num_lines, NUM_LINES_X2=num_lines * 2,
+        NUM_LINES=num_lines,
         TOTAL_PIXELS=data["total_pixels"], PPL_LABEL=data["ppl_label"],
         GAP_SPLIT=built["gap_split"],
     )

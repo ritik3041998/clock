@@ -19,15 +19,15 @@ Scan structure discovered in the data (16x16 = 256 pixels total):
 Clock definitions produced here:
     Pixel Clock  -> 1-sample-wide TRIGGER pulse at every laser==5 event,
                     i.e. every time a pixel is counted                (256 pulses)
-    Line Clock   -> TWO 1-sample-wide TRIGGER pulses per line, not a level:
-                      - "line start" pulse on the line's 1st pixel
-                      - "line complete" pulse on the line's 16th (last)
-                        pixel (coincides with that pixel's Pixel Clock pulse)
-                    LOW at every other sample, including for the whole
-                    duration in between -- it does not stay high across
-                    the line                                    (32 pulses)
-    Frame Clock  -> TWO 1-sample-wide TRIGGER pulses per frame, same style as
-                    Line Clock:
+    Line Clock   -> ONE 1-sample-wide TRIGGER pulse per line, not a level:
+                    fires once, on the line's 16th (last) pixel (coincides
+                    with that pixel's Pixel Clock pulse) -- "line complete."
+                    LOW at every other sample, including the whole line
+                    leading up to it -- it does not stay high across the
+                    line, and there is no separate "line start" pulse
+                    anymore.                                       (16 pulses)
+    Frame Clock  -> TWO 1-sample-wide TRIGGER pulses per frame, same
+                    discrete-trigger style as Line Clock:
                       - "frame start" pulse on line 1's 1st pixel
                       - "frame complete" pulse on line 16's 16th (last) pixel
                     LOW at every other sample -- not held high across the
@@ -35,7 +35,8 @@ Clock definitions produced here:
 
 All three clocks are the same kind of signal (1-sample triggers, never held
 high) -- they differ only in how often they fire: Pixel every 1 pixel, Line
-every 16 pixels (start + complete), Frame every 256 pixels (start + complete).
+every 16 pixels (once, on completion), Frame at the very start and very end
+of the whole 256-pixel frame.
 
 Optional per-clock start delay:
     Real hardware rarely fires all three clocks at the exact same instant --
@@ -261,13 +262,13 @@ def build_clocks(pos, laser, pixels_per_line=None, gap_split=None,
 
     for li, ln in enumerate(lines):
         start, end = ln[0], ln[-1]
-        # Line Clock is two triggers, not a level: one pulse when the line
-        # starts (1st pixel), one pulse when it completes (16th pixel). It
-        # does NOT stay high in between. Line_Number metadata below still
-        # spans the full line (start..end), based on the physical/undelayed
-        # event times, since that's just "which line is this sample part
-        # of" -- independent of the (possibly delayed) trigger signal.
-        fire(line_clock, start, line_delay_samples, "Line Clock (start)")
+        # Line Clock is ONE discrete trigger per line, not a level and not a
+        # start/complete pair anymore: it stays low for the whole line and
+        # fires a single pulse the moment the line completes (its last
+        # pixel). Line_Number metadata below still spans the full line
+        # (start..end), based on the physical/undelayed event times, since
+        # that's just "which line is this sample part of" -- independent of
+        # the (possibly delayed) trigger signal.
         fire(line_clock, end, line_delay_samples, "Line Clock (complete)")
         line_number[start:end + 1] = li
         for pi, sample in enumerate(ln):
@@ -371,7 +372,7 @@ def write_summary_csv(path, freqs, built, sample_rate_hz):
             "Line Clock",
             f"{freqs['line_period_s']:.9f}", f"{freqs['line_period_s']*1e3:.6f}",
             f"{freqs['line_freq_hz']:.3f}",
-            len(built["lines"]) * 2,  # 2 trigger pulses per line: start + complete
+            len(built["lines"]),  # 1 trigger pulse per line, fired on line completion
             f"{built['line_delay_samples'] * dt_us:.3f}",
         ])
         w.writerow([
@@ -449,14 +450,15 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
         ax.set_ylabel(label)
         ax.grid(alpha=0.3)
 
-    # Numbered bold(start)/dotted(complete) markers: L1, L2, ... on the Line
-    # Clock lane, F1 on the Frame Clock lane. Pixel Clock is left plain since
-    # every pulse there is already unambiguous (one event = one pixel).
-    # Read straight from the (possibly delayed) arrays so markers always
-    # match what the signal actually does.
-    line_starts, line_ends = _trigger_edges_from_array(built["line_clock"])
+    # Numbered markers: L1, L2, ... on the Line Clock lane (one bold marker
+    # per line -- Line Clock is a single discrete pulse now, no start/
+    # complete pair), F1 start(bold)/complete(dotted) on the Frame Clock
+    # lane. Pixel Clock is left plain since every pulse there is already
+    # unambiguous (one event = one pixel). Read straight from the (possibly
+    # delayed) arrays so markers always match what the signal actually does.
+    line_hits = sorted(int(i) for i in np.where(built["line_clock"] == 1)[0])
     frame_starts, frame_ends = _trigger_edges_from_array(built["frame_clock"])
-    _annotate_triggers(axes[1], line_starts, line_ends, dt, s0, s1, "L", "tab:blue")
+    _annotate_triggers(axes[1], line_hits, [], dt, s0, s1, "L", "tab:blue")
     _annotate_triggers(axes[2], frame_starts, frame_ends, dt, s0, s1, "F", "tab:green")
 
     axes[-1].set_xlabel("Time (ms)")
@@ -556,7 +558,7 @@ def main():
     print(f"Line Clock  : {freqs['line_freq_hz']:,.1f} Hz "
           f"(period {freqs['line_period_s']*1e6:.2f} us), "
           f"{len(built['lines'])} lines/frame "
-          f"({len(built['lines']) * 2} trigger pulses: start + complete per line)")
+          f"({len(built['lines'])} trigger pulses: one per line, on completion)")
     print(f"Frame Clock : {freqs['frame_freq_hz']:,.3f} Hz "
           f"(period {freqs['frame_period_s']*1e3:.3f} ms)")
     print()
