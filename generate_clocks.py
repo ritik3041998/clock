@@ -60,7 +60,10 @@ Usage:
 
 import argparse
 import csv
+import glob
+import os
 import statistics as stats
+from collections import Counter
 
 import matplotlib
 matplotlib.use("Agg")
@@ -81,9 +84,103 @@ def load_csv_pair(pos_path, laser_path):
     return pos, laser
 
 
-def build_clocks(pos, laser, pixels_per_line=16, gap_split=36,
+def resolve_scan_files(scan_dir=None, pos_csv=None, laser_csv=None):
+    """Auto-discover the position (continuous X/Y drive voltage) and laser
+    strobe (mostly-repeated on/off flag) CSVs inside scan_dir, unless
+    pos_csv/laser_csv are already given explicitly -- content-based, so it
+    works regardless of filename convention (16x16_lines.csv,
+    meas_pts_32x.csv, Square_lines.csv, ... all just work).
+
+    Any explicitly given pos_csv/laser_csv always win outright; scan_dir
+    only fills in whichever of the two wasn't given.
+    """
+    if pos_csv and laser_csv:
+        return pos_csv, laser_csv
+    if not scan_dir:
+        raise ValueError(
+            "Need either both --pos-csv and --laser-csv, or --scan-dir to "
+            "auto-discover them from a folder."
+        )
+
+    csv_paths = sorted(glob.glob(os.path.join(scan_dir, "*.csv")))
+    if not csv_paths:
+        raise ValueError(f"No CSV files found in {scan_dir!r}")
+
+    info = []
+    for path in csv_paths:
+        with open(path, newline="") as f:
+            rows = [(r[0], r[1]) for r in csv.reader(f) if r]
+        n = len(rows)
+        uniq = len(set(rows))
+        info.append({"path": path, "n": n, "uniq": uniq,
+                      "uniq_ratio": (uniq / n) if n else 0})
+
+    # A laser-strobe file is dominated by a couple of repeated flag-value
+    # rows (mostly "off", occasionally "on") -- very low unique-row ratio.
+    # A position file varies almost every row.
+    laser_like = [c for c in info if c["uniq_ratio"] < 0.05 and c["uniq"] <= 20]
+
+    if laser_csv is None:
+        names = [os.path.basename(c["path"]) for c in info]
+        if len(laser_like) == 0:
+            raise ValueError(
+                f"Couldn't find a laser-strobe file in {scan_dir!r} (looking for "
+                f"a CSV whose rows are mostly-repeated on/off flag pairs, e.g. "
+                f"'0,0' / '5,5'). Files present: {names}. This pattern may not "
+                f"include a raw strobe trace -- pass --laser-csv explicitly if "
+                f"you have one, or --pos-csv/--laser-csv for a different pair."
+            )
+        if len(laser_like) > 1:
+            cand = [os.path.basename(c["path"]) for c in laser_like]
+            raise ValueError(
+                f"Found multiple candidate laser-strobe files in {scan_dir!r}: "
+                f"{cand}. Pass --laser-csv explicitly to disambiguate."
+            )
+        laser_csv = laser_like[0]["path"]
+        laser_n = laser_like[0]["n"]
+    else:
+        with open(laser_csv, newline="") as f:
+            laser_n = sum(1 for r in csv.reader(f) if r)
+
+    if pos_csv is None:
+        pos_like = [c for c in info if c["path"] != laser_csv and c["n"] == laser_n]
+        if not pos_like:
+            raise ValueError(
+                f"Couldn't find a position file in {scan_dir!r} with the same "
+                f"row count ({laser_n}) as the laser file "
+                f"{os.path.basename(laser_csv)!r}. Pass --pos-csv explicitly."
+            )
+        # Prefer whichever candidate varies the most row-to-row -- that's the
+        # continuous X/Y drive trace, not an integer pixel-index table.
+        pos_like.sort(key=lambda c: -c["uniq_ratio"])
+        pos_csv = pos_like[0]["path"]
+
+    return pos_csv, laser_csv
+
+
+def auto_gap_split(pixel_idx):
+    """Derive the within-line/between-line gap threshold straight from the
+    data instead of hand-tuning it per dataset: the single most common gap
+    between consecutive laser-on samples is the normal pixel-to-pixel dwell
+    pitch: real datasets. 20% margin over that pitch reliably lands below
+    the (usually 30-50%+ larger) line-to-line flyback gap without needing to
+    know either value up front."""
+    diffs = np.diff(pixel_idx)
+    if len(diffs) == 0:
+        return 36
+    vals, counts = np.unique(diffs, return_counts=True)
+    pixel_pitch = int(vals[np.argmax(counts)])
+    return max(pixel_pitch + 1, int(round(pixel_pitch * 1.2)))
+
+
+def build_clocks(pos, laser, pixels_per_line=None, gap_split=None,
                   pixel_delay_samples=0, line_delay_samples=0, frame_delay_samples=0):
     """Returns dict of per-sample arrays + line/pixel grouping info.
+
+    pixels_per_line=None / gap_split=None auto-detect from the data itself
+    (see auto_gap_split() and the pixels-per-line inference below) -- pass
+    explicit values only if you want to override the detection or need a
+    strict sanity check against a specific expected grid.
 
     pixel_delay_samples / line_delay_samples / frame_delay_samples: shift
     that clock's trigger pulses this many samples LATER than the physical
@@ -95,15 +192,22 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36,
     Frame_Clock columns are shifted.
     """
     n = len(pos)
-    laser_on = np.array([1 if L[0] >= 2.5 else 0 for L in laser])  # robust to 5 vs 5.0 etc.
+    # Auto threshold: midpoint between the flag's two extreme values, robust
+    # to whatever "on" voltage the hardware uses (5V, 3.3V, ...) instead of
+    # assuming 5.
+    laser_vals = [L[0] for L in laser]
+    on_threshold = (min(laser_vals) + max(laser_vals)) / 2.0
+    laser_on = np.array([1 if v >= on_threshold else 0 for v in laser_vals])
     pixel_idx = np.where(laser_on == 1)[0]
 
     if len(pixel_idx) == 0:
-        raise ValueError("No laser-on (5,5) events found in laser csv.")
+        raise ValueError("No laser-on events found in laser csv.")
+
+    if gap_split is None:
+        gap_split = auto_gap_split(pixel_idx)
 
     # Split pixel events into lines using the gap between consecutive events.
-    # Small gap (~30 samples)  = still inside the same line.
-    # Large gap (~44 samples)  = moved on to the next line.
+    # Small gap = still inside the same line. Large gap = moved to the next.
     lines = []
     current = [pixel_idx[0]]
     for i in range(1, len(pixel_idx)):
@@ -114,10 +218,17 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36,
         current.append(pixel_idx[i])
     lines.append(current)
 
-    # Sanity check against the expected 16x16 grid (warn, don't hard-fail,
-    # in case this script is reused on a different NxN scan).
-    if len(lines) != pixels_per_line:
-        print(f"[warn] detected {len(lines)} lines, expected {pixels_per_line}")
+    if pixels_per_line is None:
+        # Infer the expected pixels/line from the data itself: the most
+        # common detected line length. Keeps the sanity-check warning below
+        # meaningful (flags genuine outlier lines) without requiring the
+        # caller to already know the grid shape.
+        pixels_per_line = Counter(len(ln) for ln in lines).most_common(1)[0][0]
+
+    print(f"[info] detected {len(lines)} lines of {pixels_per_line} pixels each "
+          f"(gap-split={gap_split})")
+    # Sanity check against the (given or inferred) expected grid shape --
+    # warn, don't hard-fail, since a few odd lines shouldn't abort the run.
     for li, ln in enumerate(lines):
         if len(ln) != pixels_per_line:
             print(f"[warn] line {li} has {len(ln)} pixels, expected {pixels_per_line}")
@@ -182,6 +293,8 @@ def build_clocks(pos, laser, pixels_per_line=16, gap_split=36,
         "pixel_delay_samples": pixel_delay_samples,
         "line_delay_samples": line_delay_samples,
         "frame_delay_samples": frame_delay_samples,
+        "gap_split": gap_split,                 # threshold actually used (given or auto-detected)
+        "pixels_per_line": pixels_per_line,      # expected/inferred pixels-per-line actually used
     }
 
 
@@ -355,21 +468,31 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--pos-csv", default="Correct_16x16.csv")
-    ap.add_argument("--laser-csv", default="laser16x16.csv")
+    ap.add_argument("--scan-dir", default=None,
+                     help="Folder to auto-discover the position/laser CSVs from "
+                          "(content-based -- works with any filename convention, "
+                          "e.g. --scan-dir SCAN-PATTERNS/32x32_Pattern). Ignored "
+                          "for whichever of --pos-csv/--laser-csv you give explicitly.")
+    ap.add_argument("--pos-csv", default=None,
+                     help="X/Y scanner drive voltage CSV (default: Correct_16x16.csv "
+                          "if neither this, --laser-csv nor --scan-dir is given)")
+    ap.add_argument("--laser-csv", default=None,
+                     help="Laser strobe flag CSV (default: laser16x16.csv "
+                          "if neither this, --pos-csv nor --scan-dir is given)")
     ap.add_argument("--sample-rate", type=float, default=1e6,
                      help="DAQ sample rate in Hz (default 1e6 = 1 MSa/s)")
-    ap.add_argument("--pixels-per-line", type=int, default=16,
-                     help="Expected pixels/line, used only for the sanity-check "
-                          "warning -- line detection itself is gap-based and "
-                          "works for any NxN (or NxM) grid (default 16)")
-    ap.add_argument("--gap-split", type=int, default=36,
+    ap.add_argument("--pixels-per-line", type=int, default=None,
+                     help="Expected pixels/line for the sanity-check warning. "
+                          "Default: auto-inferred from the data (the most common "
+                          "detected line length) -- line detection itself is "
+                          "gap-based and works for any N-line, M-pixel grid.")
+    ap.add_argument("--gap-split", type=int, default=None,
                      help="Sample-gap threshold that separates 'still inside "
-                          "the same line' pixel spacing from 'moved to the "
-                          "next line' flyback gaps. Must sit strictly between "
-                          "the two on your data -- inspect consecutive "
-                          "laser-on sample gaps if the default (tuned for the "
-                          "16x16 dataset) misdetects your line count (default 36)")
+                          "the same line' pixel spacing from 'moved to the next "
+                          "line' flyback gaps. Default: auto-detected from the "
+                          "data (1.2x the most common consecutive-pixel gap) -- "
+                          "pass this explicitly only if auto-detection misdetects "
+                          "your line count.")
     ap.add_argument("--out-prefix", default="")
     ap.add_argument("--pixel-delay-us", type=float, default=0.0,
                      help="Delay Pixel Clock's triggers this many microseconds "
@@ -387,7 +510,13 @@ def main():
     line_delay_samples = round(args.line_delay_us / dt_us)
     frame_delay_samples = round(args.frame_delay_us / dt_us)
 
-    pos, laser = load_csv_pair(args.pos_csv, args.laser_csv)
+    if args.pos_csv or args.laser_csv or args.scan_dir:
+        pos_csv, laser_csv = resolve_scan_files(args.scan_dir, args.pos_csv, args.laser_csv)
+    else:
+        pos_csv, laser_csv = "Correct_16x16.csv", "laser16x16.csv"
+    print(f"[info] pos-csv={pos_csv}  laser-csv={laser_csv}")
+
+    pos, laser = load_csv_pair(pos_csv, laser_csv)
     built = build_clocks(pos, laser, pixels_per_line=args.pixels_per_line,
                           gap_split=args.gap_split,
                           pixel_delay_samples=pixel_delay_samples,

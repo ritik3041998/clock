@@ -31,7 +31,7 @@ import base64
 import generate_clocks as gc
 
 
-def build_data(pos_csv, laser_csv, sample_rate_hz, pixels_per_line=16, gap_split=36):
+def build_data(pos_csv, laser_csv, sample_rate_hz, pixels_per_line=None, gap_split=None):
     pos, laser = gc.load_csv_pair(pos_csv, laser_csv)
     # physical/undelayed baseline -- delay lives in JS now
     built = gc.build_clocks(pos, laser, pixels_per_line=pixels_per_line, gap_split=gap_split)
@@ -1050,11 +1050,16 @@ const DATA = {DATA_JSON};
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--pos-csv", default="Correct_16x16.csv")
-    ap.add_argument("--laser-csv", default="laser16x16.csv")
+    ap.add_argument("--scan-dir", default=None,
+                     help="Folder to auto-discover the position/laser CSVs from "
+                          "(content-based, any filename convention)")
+    ap.add_argument("--pos-csv", default=None)
+    ap.add_argument("--laser-csv", default=None)
     ap.add_argument("--sample-rate", type=float, default=1e6)
-    ap.add_argument("--pixels-per-line", type=int, default=16)
-    ap.add_argument("--gap-split", type=int, default=36)
+    ap.add_argument("--pixels-per-line", type=int, default=None,
+                     help="Default: auto-inferred from the data")
+    ap.add_argument("--gap-split", type=int, default=None,
+                     help="Default: auto-detected from the data")
     ap.add_argument("--pixel-delay-us", type=float, default=0.0,
                      help="Initial value pre-filled into the page's Pixel Delay input (editable live)")
     ap.add_argument("--line-delay-us", type=float, default=0.0,
@@ -1063,6 +1068,12 @@ def main():
                      help="Initial value pre-filled into the page's Frame Delay input (editable live)")
     ap.add_argument("--out", default="scan_animation.html")
     args = ap.parse_args()
+
+    if args.pos_csv or args.laser_csv or args.scan_dir:
+        args.pos_csv, args.laser_csv = gc.resolve_scan_files(
+            args.scan_dir, args.pos_csv, args.laser_csv)
+    else:
+        args.pos_csv, args.laser_csv = "Correct_16x16.csv", "laser16x16.csv"
 
     data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate,
                            pixels_per_line=args.pixels_per_line, gap_split=args.gap_split)

@@ -411,18 +411,43 @@ there is no level/held-high signal anywhere in this pipeline anymore.
   columns, not recomputed from the physical event times, so they stay
   correct under any delay.
 
-- **The pipeline is not limited to 16×16.** `build_clocks()`'s line
-  detection is purely gap-based (§ above) — it doesn't assume a fixed
-  line count or a fixed pixels-per-line, so `generate_clocks.py`,
-  `build_report.py` and `build_animation.py` all work unmodified on any
-  N-line, M-pixels-per-line raster scan. `--pixels-per-line` only feeds a
-  sanity-check warning; it never changes what gets detected. Verified
-  end-to-end against real `SCAN-PATTERNS/32x32_Pattern/` data (32 lines ×
-  38 laser-fire points/line, detected automatically with the default
-  `--gap-split 36`) — the CSV output, matplotlib plots, HTML report and
-  live animation all render correctly with dynamically computed grid
-  labels, pixel counts and per-line numbering instead of a hardcoded
-  "16"/"256".
+- **The pipeline is not limited to 16×16, and no longer needs manual
+  tuning per pattern.** `build_clocks()`'s line detection is purely
+  gap-based — it doesn't assume a fixed line count or pixels-per-line, so
+  `generate_clocks.py`, `build_report.py` and `build_animation.py` all
+  work unmodified on any N-line, M-pixels-per-line raster scan. Two things
+  used to need a human to look at the data first; both are now automatic
+  by default (still overridable):
+    - **`--gap-split`** (the within-line vs. line-to-line gap threshold)
+      defaults to `None`, meaning "auto" — `auto_gap_split()` takes the
+      single most common gap between consecutive laser-on samples (the
+      normal pixel dwell pitch) and sets the threshold 20% above it. No
+      more hand-picking a number per dataset.
+    - **`--pixels-per-line`** also defaults to `None` — inferred as the
+      most common detected line length, purely for the sanity-check
+      warning (never used to change what's detected).
+  - **`--scan-dir <folder>`** auto-discovers which of a folder's CSVs is
+    the position log and which is the laser strobe, by content (a laser
+    file is dominated by a couple of repeated on/off flag rows; a position
+    file varies almost every row) — not filename, so it doesn't matter if
+    your files are named `Correct_16x16.csv`/`laser16x16.csv`,
+    `32x32_lines.csv`/`meas_pts_32x.csv`, or anything else. Point it at
+    any `SCAN-PATTERNS/*_Pattern/` folder and it just works:
+    `python generate_clocks.py --scan-dir SCAN-PATTERNS/64x64_Pattern`.
+    If a folder doesn't have a valid position+laser pair (e.g. it's
+    missing a strobe file entirely, or the two files have mismatched row
+    counts), it fails with a specific error telling you what's missing
+    rather than silently guessing wrong.
+  - Verified end-to-end against every complete pattern in
+    `SCAN-PATTERNS/`: 16×16 (256 px, 16 lines), 32×32 (1,216 px, 32 lines
+    of 38), and 64×64 (3,008 px, 64 lines of 47) all auto-detect correctly
+    with zero manual parameters — CSV output, matplotlib plots, HTML
+    report and live animation all render with the right grid labels,
+    pixel counts and per-line numbering. `4x4_Pattern`, `8x8_Pattern` and
+    `Sqaure_Pattern` don't include a usable laser-strobe trace (or, for
+    Square, have mismatched row counts between its two CSVs) — auto-
+    discovery correctly refuses rather than fabricating clocks from an
+    incomplete pair.
 
 ---
 
@@ -434,6 +459,10 @@ python -m pip install pandas matplotlib numpy
 
 # 2. Derive the clocks (reads the raw CSVs, writes clock_output.csv etc.)
 python generate_clocks.py --sample-rate 1e6
+
+# 2b. ...or point it at any scan-pattern folder and let it auto-detect
+#     the file pair, gap-split threshold and grid shape:
+python generate_clocks.py --scan-dir SCAN-PATTERNS/32x32_Pattern --sample-rate 1e6
 
 # 3. Plot from the derived table (reads clock_output.csv, writes PNGs)
 python visualize_clocks.py --zoom-lines 2

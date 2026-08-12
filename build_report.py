@@ -764,16 +764,27 @@ a {{ color: var(--accent); }}
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--pos-csv", default="Correct_16x16.csv")
-    ap.add_argument("--laser-csv", default="laser16x16.csv")
+    ap.add_argument("--scan-dir", default=None,
+                     help="Folder to auto-discover the position/laser CSVs from "
+                          "(content-based, any filename convention)")
+    ap.add_argument("--pos-csv", default=None)
+    ap.add_argument("--laser-csv", default=None)
     ap.add_argument("--sample-rate", type=float, default=1e6)
-    ap.add_argument("--pixels-per-line", type=int, default=16)
-    ap.add_argument("--gap-split", type=int, default=36)
+    ap.add_argument("--pixels-per-line", type=int, default=None,
+                     help="Default: auto-inferred from the data")
+    ap.add_argument("--gap-split", type=int, default=None,
+                     help="Default: auto-detected from the data")
     ap.add_argument("--pixel-delay-us", type=float, default=0.0)
     ap.add_argument("--line-delay-us", type=float, default=0.0)
     ap.add_argument("--frame-delay-us", type=float, default=0.0)
     ap.add_argument("--out", default="report.html")
     args = ap.parse_args()
+
+    if args.pos_csv or args.laser_csv or args.scan_dir:
+        args.pos_csv, args.laser_csv = gc.resolve_scan_files(
+            args.scan_dir, args.pos_csv, args.laser_csv)
+    else:
+        args.pos_csv, args.laser_csv = "Correct_16x16.csv", "laser16x16.csv"
 
     dt_us = 1e6 / args.sample_rate
     pixel_delay_samples = round(args.pixel_delay_us / dt_us)
@@ -849,7 +860,7 @@ def main():
         GRID_LABEL=grid_label, POS_CSV=pos_csv_name, LASER_CSV=laser_csv_name,
         NUM_LINES=num_lines, NUM_LINES_X2=num_lines * 2,
         TOTAL_PIXELS=data["total_pixels"], PPL_LABEL=data["ppl_label"],
-        GAP_SPLIT=args.gap_split,
+        GAP_SPLIT=built["gap_split"],
     )
 
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
