@@ -460,10 +460,7 @@ def plot_timing(built, sample_rate_hz, out_path, sample_range=None, title_suffix
     ]
     for ax, (label, sig, color) in zip(axes, signals):
         ax.step(t, sig, where="post", color=color, linewidth=1.5)
-        # Line/Frame Clock lanes stay strictly within the 0-1 digital range;
-        # Pixel Clock keeps a little headroom since it has no marker text
-        # floating above it that needs the extra room.
-        ax.set_ylim(0, 1) if label in ("Line Clock", "Frame Clock") else ax.set_ylim(-0.2, 1.2)
+        ax.set_ylim(0, 1)  # all three lanes confined to the strict digital 0-1 range
         ax.set_ylabel(label)
         ax.grid(alpha=0.3)
 
