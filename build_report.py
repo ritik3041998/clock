@@ -785,6 +785,9 @@ def main():
     ap.add_argument("--pixel-delay-us", type=float, default=0.0)
     ap.add_argument("--line-delay-us", type=float, default=0.0)
     ap.add_argument("--frame-delay-us", type=float, default=0.0)
+    ap.add_argument("--keep-anomalous-tail", action="store_true",
+                     help="Keep a trailing next-frame-start artifact line "
+                          "instead of auto-dropping it (see generate_clocks.py)")
     ap.add_argument("--out", default="report.html")
     args = ap.parse_args()
 
@@ -804,7 +807,8 @@ def main():
                              gap_split=args.gap_split,
                              pixel_delay_samples=pixel_delay_samples,
                              line_delay_samples=line_delay_samples,
-                             frame_delay_samples=frame_delay_samples)
+                             frame_delay_samples=frame_delay_samples,
+                             drop_anomalous_tail=not args.keep_anomalous_tail)
     freqs = gc.compute_frequencies(built, args.sample_rate, built["n"])
     data = compute_report_data(pos, built, args.sample_rate)
 

@@ -174,8 +174,37 @@ def auto_gap_split(pixel_idx):
     return max(pixel_pitch + 1, int(round(pixel_pitch * 1.2)))
 
 
+def _drop_trailing_anomalous_line(lines, gap_split, factor=5):
+    """Detect and drop a trailing 'next-frame-start' artifact: some raw scan
+    captures include one extra sample after the real last line, sitting
+    back at the start of the frame (a full-width retrace) instead of a
+    normal one-column flyback. That shows up as the LAST inter-line gap
+    being drastically bigger (multiple times) than every other inter-line
+    gap in the same file -- a real line-to-line flyback never jumps that
+    far. When detected, that trailing line is dropped entirely: its pixel
+    events no longer fire Pixel Clock, and it's not counted as a line for
+    Line/Frame Clock, so it never gets drawn in any plot either.
+
+    Returns (lines, dropped_line_or_None).
+    """
+    if len(lines) < 3:
+        return lines, None
+    inter_gaps = [lines[i][0] - lines[i - 1][-1] for i in range(1, len(lines))]
+    last_gap, other_gaps = inter_gaps[-1], inter_gaps[:-1]
+    typical = max(other_gaps)
+    if last_gap > max(factor * typical, factor * gap_split):
+        print(f"[info] dropped trailing line: the {last_gap}-sample gap before it is "
+              f"{last_gap / typical:.1f}x the largest normal line-to-line gap "
+              f"({typical} samples) in this file -- looks like a next-frame-start "
+              f"artifact, not a real line. Pass keep_anomalous_tail=True "
+              f"(--keep-anomalous-tail on the CLI) to keep it instead.")
+        return lines[:-1], lines[-1]
+    return lines, None
+
+
 def build_clocks(pos, laser, pixels_per_line=None, gap_split=None,
-                  pixel_delay_samples=0, line_delay_samples=0, frame_delay_samples=0):
+                  pixel_delay_samples=0, line_delay_samples=0, frame_delay_samples=0,
+                  drop_anomalous_tail=True):
     """Returns dict of per-sample arrays + line/pixel grouping info.
 
     pixels_per_line=None / gap_split=None auto-detect from the data itself
@@ -218,6 +247,14 @@ def build_clocks(pos, laser, pixels_per_line=None, gap_split=None,
             current = []
         current.append(pixel_idx[i])
     lines.append(current)
+
+    if drop_anomalous_tail:
+        lines, dropped_line = _drop_trailing_anomalous_line(lines, gap_split)
+        if dropped_line is not None:
+            # Rebuild pixel_idx from the surviving lines only, so the
+            # dropped line's samples never fire Pixel Clock either -- it's
+            # excluded from every clock and every plot, not just Line/Frame.
+            pixel_idx = np.array([i for ln in lines for i in ln])
 
     if pixels_per_line is None:
         # Infer the expected pixels/line from the data itself: the most
@@ -521,6 +558,13 @@ def main():
     ap.add_argument("--frame-delay-us", type=float, default=0.0,
                      help="Delay Frame Clock's triggers this many microseconds "
                           "after each physical frame start/complete (default 0)")
+    ap.add_argument("--keep-anomalous-tail", action="store_true",
+                     help="Some raw scan captures include one extra trailing "
+                          "sample after the real last line (a next-frame-start "
+                          "artifact, detected as a last inter-line gap several "
+                          "times bigger than every other one). By default that "
+                          "trailing line is dropped from every clock and plot; "
+                          "pass this flag to keep it instead.")
     args = ap.parse_args()
 
     dt_us = 1e6 / args.sample_rate
@@ -539,7 +583,8 @@ def main():
                           gap_split=args.gap_split,
                           pixel_delay_samples=pixel_delay_samples,
                           line_delay_samples=line_delay_samples,
-                          frame_delay_samples=frame_delay_samples)
+                          frame_delay_samples=frame_delay_samples,
+                          drop_anomalous_tail=not args.keep_anomalous_tail)
     freqs = compute_frequencies(built, args.sample_rate, built["n"])
 
     out_csv = f"{args.out_prefix}clock_output.csv"

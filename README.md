@@ -391,6 +391,22 @@ there is no level/held-high signal anywhere in this pipeline anymore.
   they tell you if the detected line/pixel counts don't match
   `--pixels-per-line`, and let you re-tune `--gap-split` if the default
   misdetects your line boundaries.
+- **A trailing "next-frame-start" artifact line is auto-dropped by default.**
+  Some raw scan captures (confirmed on the `32x32_Pattern` and `64x64_Pattern`
+  reference data) include one extra sample after the real last line, sitting
+  back at the far edge of the scan (a full-width retrace) instead of a
+  normal one-column flyback — as if the logger grabbed the first sample of
+  the *next* frame before stopping. `build_clocks()` detects this
+  automatically: if the gap before the last detected line is several times
+  bigger than every other line-to-line gap in the same file (`factor=5` by
+  default, see `_drop_trailing_anomalous_line()`), that trailing line is
+  dropped entirely — its pixels never fire Pixel Clock, it's not counted
+  as a line, and Line Clock's "end" pulse / Frame Clock's "complete" pulse
+  land on the real last line instead of the artifact. Prints an `[info]`
+  line explaining what was dropped and why. Pass `--keep-anomalous-tail`
+  to disable this and see the raw, undropped data instead (useful for
+  diagnosing whatever produced the artifact in the first place). 16×16 has
+  no such artifact, so this never triggers on it.
 - **Sample rate is an assumption, not measured.** Nothing in the CSVs states
   the DAQ's actual sample rate — 1 MSa/s was confirmed for this run, but
   it's a single `--sample-rate` argument if that's wrong.

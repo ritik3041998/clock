@@ -34,10 +34,12 @@ import base64
 import generate_clocks as gc
 
 
-def build_data(pos_csv, laser_csv, sample_rate_hz, pixels_per_line=None, gap_split=None):
+def build_data(pos_csv, laser_csv, sample_rate_hz, pixels_per_line=None, gap_split=None,
+               drop_anomalous_tail=True):
     pos, laser = gc.load_csv_pair(pos_csv, laser_csv)
     # physical/undelayed baseline -- delay lives in JS now
-    built = gc.build_clocks(pos, laser, pixels_per_line=pixels_per_line, gap_split=gap_split)
+    built = gc.build_clocks(pos, laser, pixels_per_line=pixels_per_line, gap_split=gap_split,
+                             drop_anomalous_tail=drop_anomalous_tail)
     n = built["n"]
     lines = built["lines"]
     freqs = gc.compute_frequencies(built, sample_rate_hz, n)
@@ -1079,6 +1081,9 @@ def main():
                      help="Initial value pre-filled into the page's Line Delay input (editable live)")
     ap.add_argument("--frame-delay-us", type=float, default=0.0,
                      help="Initial value pre-filled into the page's Frame Delay input (editable live)")
+    ap.add_argument("--keep-anomalous-tail", action="store_true",
+                     help="Keep a trailing next-frame-start artifact line "
+                          "instead of auto-dropping it (see generate_clocks.py)")
     ap.add_argument("--out", default="scan_animation.html")
     args = ap.parse_args()
 
@@ -1089,7 +1094,8 @@ def main():
         args.pos_csv, args.laser_csv = "Correct_16x16.csv", "laser16x16.csv"
 
     data_obj = build_data(args.pos_csv, args.laser_csv, args.sample_rate,
-                           pixels_per_line=args.pixels_per_line, gap_split=args.gap_split)
+                           pixels_per_line=args.pixels_per_line, gap_split=args.gap_split,
+                           drop_anomalous_tail=not args.keep_anomalous_tail)
     data_json = json.dumps(data_obj, separators=(",", ":"))
     freqs = data_obj["freqs"]
 
